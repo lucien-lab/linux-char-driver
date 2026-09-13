@@ -118,15 +118,33 @@ cp "$LAB/tests/runner/lib.sh"  "$ROOTFS/tests/lib.sh"
 cp "$LAB/tests/runner/init.sh" "$ROOTFS/init"
 chmod +x "$ROOTFS/init"
 
-# 注入本次要跑的阶段脚本
+# 注入本次要跑的阶段脚本（作为默认值；实际执行哪个可以由内核命令行 test= 覆盖）
 if [ -f "$LAB/tests/phases/$TEST.sh" ]; then
     cp "$LAB/tests/phases/$TEST.sh" "$ROOTFS/tests/phase.sh"
     sed -i "s/^TEST_NAME=.*/TEST_NAME=$TEST/" "$ROOTFS/init"
-    echo "  注入阶段测试: $TEST"
+    echo "  默认阶段测试: $TEST"
 else
     echo "  !! 找不到阶段脚本 tests/phases/$TEST.sh"
     echo "TEST_NAME=$TEST" >> "$ROOTFS/init"
 fi
+
+# 把所有阶段脚本都打进 initramfs：这样一次构建可以跑任意阶段测试
+# （否则跑 smoke 回归时会重复执行上一次注入的脚本，得出假结论）
+mkdir -p "$ROOTFS/tests/phases"
+cp "$LAB"/tests/phases/*.sh "$ROOTFS/tests/phases/" 2>/dev/null
+# 阶段级模块清单也一并带上（如 IIO 阶段只加载 virt_i2c + sensor_iio）
+cp "$LAB"/tests/phases/*.modules "$ROOTFS/tests/phases/" 2>/dev/null
+# 被选中阶段若有专属模块清单，用它覆盖默认值
+if [ -f "$LAB/tests/phases/$TEST.modules" ]; then
+    cp "$LAB/tests/phases/$TEST.modules" "$ROOTFS/etc/modules.load"
+    echo "  阶段专属模块清单: $TEST.modules"
+fi
+for f in "$ROOTFS"/tests/phases/*.sh; do
+    [ -f "$f" ] || continue
+    # .sh 结尾的阶段脚本在 initramfs 里不需要可执行位（用 . 加载），
+    # 但 /tests/phase.sh 这份默认副本会被其他脚本复用，保持权限一致即可
+    chmod 644 "$f"
+done
 
 # 打包
 ( cd "$ROOTFS" && find . -print0 | cpio --null -o -H newc 2>/dev/null | gzip -9 > "$OUT/initramfs.cpio.gz" )

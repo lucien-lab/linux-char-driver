@@ -37,7 +37,7 @@ echo "    串口日志: $LOG"
 qemu-system-aarch64 \
     -M virt -cpu cortex-a72 -accel tcg -m 1G -display none -serial stdio \
     -dtb "$DTB" -kernel "$IMAGE" -initrd "$INITRD" \
-    -append "console=ttyAMA0" > "$LOG" 2>&1 &
+    -append "console=ttyAMA0 test=$TEST" > "$LOG" 2>&1 &
 QPID=$!
 
 elapsed=0

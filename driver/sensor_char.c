@@ -20,6 +20,11 @@
  *   [数据通路]
  *     传感器寄存器 --I2C--> 线程化中断处理 --> 内核缓存 + waitqueue --> read()/ioctl()
  *
+ *   [用户态接口：四种 IO 模型]
+ *     阻塞 read / 非阻塞(O_NONBLOCK) read / poll-select-epoll / fasync+SIGIO
+ *     四者共用同一份"本 fd 是否有新样本"的判定（struct sensor_file，per-open 状态），
+ *     保证 read 与 poll 的语义不漂移，也避免 epoll 忙轮询。
+ *
  *   [触发源]
  *     实验中用 hrtimer 周期性调用 generic_handle_domain_irq() 触发虚拟中断；
  *     真机上这一路是传感器 ALERT/DRDY 引脚接到 GIC 的硬件中断线，
@@ -43,6 +48,7 @@
 #include <linux/uaccess.h>
 #include <linux/mutex.h>
 #include <linux/wait.h>
+#include <linux/poll.h>		/* poll_wait / fasync_helper / kill_fasync */
 #include <linux/jiffies.h>
 #include <linux/i2c.h>
 #include <linux/of.h>
@@ -62,6 +68,9 @@
 
 #define DRV_NAME	"sensor_char"
 #define SENSOR_REG_TEMP	0x00	/* tmp105 温度寄存器（SHT30 为 0x0000 命令字） */
+
+/* 阻塞 read() 等待新样本的最长时间：超时返回 -ETIMEDOUT，避免用户态永久卡死 */
+#define SENSOR_READ_TIMEOUT_MS	2000
 
 /* 传感器寄存器原始值 -> 毫摄氏度：LSB = 1/16 °C = 62.5 m°C */
 #define RAW_TO_MILLI(raw)	((s32)(raw) * 1000 / 16)
@@ -84,7 +93,8 @@ struct sensor_dev {
 
 	/* 数据与同步 */
 	struct mutex		lock;		/* 保护 latest/stats 与 I2C 访问 */
-	wait_queue_head_t	wq;		/* read() 阻塞队列 */
+	wait_queue_head_t	wq;		/* read()/poll() 阻塞队列 */
+	struct fasync_struct	*fasync;	/* 注册了 O_ASYNC 的进程链表（SIGIO 通知用） */
 	struct sensor_sample	latest;
 	unsigned long		interval_ms;
 
@@ -92,6 +102,21 @@ struct sensor_dev {
 	u32			read_count;
 	u32			irq_count;
 	u32			i2c_errors;
+};
+
+/*
+ * per-open 上下文：每个 open() 出来的文件描述符各自记录"已经消费到哪个样本"。
+ *
+ * 为什么必须 per-open 而不是用全局的 latest.seq？
+ *   poll() 的语义是"调用者现在能不能无阻塞地读到数据"。如果拿全局最新序号判断，
+ *   同一个样本被读走之后 poll 仍然回报可读 → epoll/select 立即返回 → 用户态
+ *   反复空转（忙轮询），CPU 打满。把基准放到 open 上下文，"样本被消费"才是
+ *   相对该 fd 成立的事实，poll 才能保持正确的电平触发语义。
+ * 顺带好处：多个进程各自 open 时互不干扰，这也是多进程并发读的基础。
+ */
+struct sensor_file {
+	struct sensor_dev	*sd;
+	u32			last_seq;	/* 本 fd 已经消费到的样本序号 */
 };
 
 static struct class *sensor_class;
@@ -196,6 +221,15 @@ static irqreturn_t sensor_irq_thread(int irq, void *data)
 	 */
 	wake_up_interruptible(&sd->wq);
 
+	/*
+	 * 异步通知：唤醒所有用 F_SETFL|O_ASYNC 注册过的进程（发送 SIGIO）。
+	 * kill_fasync 内部只做遍历 + send_sigio，不会睡眠，因此可以在
+	 * 线程化中断上下文调用（若在硬中断上下文则同样安全，但本驱动本就在这里）。
+	 * 注意顺序：必须放在 latest 更新 + wake_up 之后，否则用户态收到信号来读时
+	 * 可能读到旧样本（表现为 SIGIO 到了但读不到新数据）。
+	 */
+	kill_fasync(&sd->fasync, SIGIO, POLL_IN);
+
 	dev_dbg(&sd->client->dev, "sample %u: %d mC\n",
 		sd->latest.seq, sd->latest.temp_milli);
 
@@ -220,11 +254,32 @@ static enum hrtimer_restart sensor_timer_fn(struct hrtimer *timer)
 
 /* ============================ 字符设备接口 ============================ */
 
+/*
+ * 数据可用性判定：read()、poll() 共用同一个函数，避免两条路径的语义漂移。
+ * 判定基准是本 fd 的 last_seq（而不是进入函数那一刻的全局序号），
+ * 因此"有没有新样本"对每个 open 的文件描述符是独立成立的。
+ */
+static bool sensor_has_new_sample(struct sensor_file *sf)
+{
+	return READ_ONCE(sf->sd->latest.seq) != sf->last_seq;
+}
+
+/* 前向声明：release() 里要摘除异步通知，而 sensor_fasync 定义在后面 */
+static int sensor_fasync(int fd, struct file *file, int on);
+
 static int sensor_open(struct inode *inode, struct file *file)
 {
 	struct sensor_dev *sd = container_of(inode->i_cdev, struct sensor_dev, cdev);
+	struct sensor_file *sf;
 
-	file->private_data = sd;
+	sf = kzalloc(sizeof(*sf), GFP_KERNEL);
+	if (!sf)
+		return -ENOMEM;
+
+	sf->sd = sd;
+	sf->last_seq = 0;	/* 新打开的 fd 认为"什么都还没读过"，首次 read 立即可返回 */
+	file->private_data = sf;
+
 	mutex_lock(&sd->lock);
 	sd->open_count++;
 	mutex_unlock(&sd->lock);
@@ -234,35 +289,55 @@ static int sensor_open(struct inode *inode, struct file *file)
 
 static int sensor_release(struct inode *inode, struct file *file)
 {
-	struct sensor_dev *sd = file->private_data;
+	struct sensor_file *sf = file->private_data;
+	struct sensor_dev *sd = sf->sd;
 
+	/*
+	 * 摘除异步通知。必须先做、且必须在 kfree(sf) 之前：
+	 * fasync_helper(..., 0, ...) 内部会遍历 fasync 链表并把本 file 摘掉，
+	 * 它通过 filp->private_data 找驱动私有数据，释放后就变成 use-after-free。
+	 */
+	sensor_fasync(-1, file, 0);
+
+	kfree(sf);
+	file->private_data = NULL;
 	dev_info(&sd->client->dev, "closed\n");
 	return 0;
 }
 
 /*
- * read(): 阻塞等待"下一个新样本"，返回一行文本。
+ * read(): 读取"本 fd 尚未消费过的新样本"，返回一行文本。
  *   cat /dev/sensor0 可以持续看到数据流；行为与传感器驱动常见的字符接口一致。
+ *
+ * 四种 IO 模型里，这里承担"阻塞"与"非阻塞"两种：
+ *   阻塞   ：wait_event_interruptible_timeout 睡在 sd->wq 上，被中断下半部唤醒
+ *   非阻塞 ：O_NONBLOCK 下立刻返回 -EAGAIN（让调用者去 poll/epoll/自旋）
+ *
+ * 注意 O_NONBLOCK 是由调用者通过 open/fcntl 设置的标志，驱动只负责遵循它；
+ * 真正的"阻塞/不阻塞"行为发生在驱动里的等待，VFS 不会替驱动决定。
  */
 static ssize_t sensor_read(struct file *file, char __user *ubuf,
 			   size_t count, loff_t *ppos)
 {
-	struct sensor_dev *sd = file->private_data;
+	struct sensor_file *sf = file->private_data;
+	struct sensor_dev *sd = sf->sd;
 	struct sensor_sample snap;
-	unsigned long seq;
 	char kbuf[96];
 	int len, ret;
 
-	seq = READ_ONCE(sd->latest.seq);
-
-	if (file->f_flags & O_NONBLOCK) {
-		if (READ_ONCE(sd->latest.seq) == seq && seq == 0)
+	if (!sensor_has_new_sample(sf)) {
+		if (file->f_flags & O_NONBLOCK)
 			return -EAGAIN;
-	} else {
-		/* 等待一个新样本，最多 2 秒 */
+
+		/*
+		 * 等待新样本。wait_event_* 宏内部是"先判断条件再睡"的循环，
+		 * 并且把条件判断放在自旋锁保护的临界区里，因此不会出现
+		 * "条件刚成立、唤醒已发出"的丢唤醒问题，无需手工加锁。
+		 * 超时返回 0（不是错误码），<0 表示被信号打断。
+		 */
 		ret = wait_event_interruptible_timeout(
-			sd->wq, READ_ONCE(sd->latest.seq) != seq,
-			msecs_to_jiffies(2000));
+			sd->wq, sensor_has_new_sample(sf),
+			msecs_to_jiffies(SENSOR_READ_TIMEOUT_MS));
 		if (ret == 0)
 			return -ETIMEDOUT;
 		if (ret < 0)
@@ -271,6 +346,7 @@ static ssize_t sensor_read(struct file *file, char __user *ubuf,
 
 	mutex_lock(&sd->lock);
 	snap = sd->latest;
+	sf->last_seq = snap.seq;	/* 记录"已消费"，poll 之后才会重新报告可读 */
 	sd->read_count++;
 	mutex_unlock(&sd->lock);
 
@@ -284,11 +360,51 @@ static ssize_t sensor_read(struct file *file, char __user *ubuf,
 	return len;
 }
 
+/*
+ * poll(): 支持 select/poll/epoll 多路复用。
+ *
+ * 两件事，顺序不能反：
+ *   1. poll_wait()：把本文件的等待项挂到 sd->wq 上（只登记，不睡眠；真正睡眠是
+ *      由调用方 poll/epoll_wait 系统调用负责）。驱动不需要持有锁，也不该持锁。
+ *   2. 返回当前的可用性掩码：有新样本就 EPOLLIN，否则 0。
+ *
+ * 这里只实现"电平触发"语义（这也是驱动唯一应该做的）：每次调用都基于当前状态
+ * 重新回答，所以消费掉样本后自然不再上报 EPOLLIN。边沿触发的行为由 epoll 在
+ * 用户态接口层面实现，驱动不需要也不应该感知。
+ */
+static __poll_t sensor_poll(struct file *file, poll_table *wait)
+{
+	struct sensor_file *sf = file->private_data;
+
+	poll_wait(file, &sf->sd->wq, wait);
+
+	if (sensor_has_new_sample(sf))
+		return EPOLLIN | EPOLLRDNORM;
+
+	return 0;
+}
+
+/*
+ * fasync(): 支持异步通知（SIGIO）。
+ *   用户态三步：fcntl(fd, F_SETOWN, getpid()) 指定接收进程，
+ *               安装 SIGIO 处理函数，fcntl(fd, F_SETFL, flags | O_ASYNC) 打开开关。
+ *   VFS 在置位 O_ASYNC 时会调用这里的 fasync(on=1)，摘除时调用 fasync(on=0)，
+ *   我们只负责把登记信息交给 fasync_helper 维护的链表。
+ *   close() 时 release 会显式调用 fasync(-1, file, 0) 清理。
+ */
+static int sensor_fasync(int fd, struct file *file, int on)
+{
+	struct sensor_file *sf = file->private_data;
+
+	return fasync_helper(fd, file, on, &sf->sd->fasync);
+}
+
 /* write(): 演示写路径——写入 0x01 触发一次"立即采样" */
 static ssize_t sensor_write(struct file *file, const char __user *ubuf,
 			    size_t count, loff_t *ppos)
 {
-	struct sensor_dev *sd = file->private_data;
+	struct sensor_file *sf = file->private_data;
+	struct sensor_dev *sd = sf->sd;
 	char kbuf[8];
 
 	if (count == 0 || count > sizeof(kbuf))
@@ -316,7 +432,8 @@ static ssize_t sensor_write(struct file *file, const char __user *ubuf,
 
 static long sensor_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
-	struct sensor_dev *sd = file->private_data;
+	struct sensor_file *sf = file->private_data;
+	struct sensor_dev *sd = sf->sd;
 	struct sensor_sample snap;
 	struct sensor_stats stats;
 	u32 interval;
@@ -383,6 +500,8 @@ static const struct file_operations sensor_fops = {
 	.read		= sensor_read,
 	.write		= sensor_write,
 	.unlocked_ioctl	= sensor_ioctl,
+	.poll		= sensor_poll,	/* select/poll/epoll */
+	.fasync		= sensor_fasync,	/* SIGIO 异步通知 */
 	.llseek		= no_llseek,
 };
 

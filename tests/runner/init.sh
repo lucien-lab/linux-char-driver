@@ -28,10 +28,30 @@ mount -t configfs none /sys/kernel/config 2>/dev/null
 TEST_NAME=${TEST_NAME:-unknown}
 KVER=$(uname -r)
 
+# ---------------------------------------------------------------------------
+# 选择本次要执行的阶段脚本（优先用内核命令行，见下）
+#
+# 为什么需要这一步：initramfs 是构建时打包的，如果只把“默认阶段脚本”烤进去，
+# 那么不重新构建就切换测试（例如跑完 01-io-models 再跑 smoke 回归）就会
+# 重复执行上一次的脚本 —— “回归通过”会变成假结论。
+# 因此：
+#   1) 内核命令行 test=<名字>（由 scripts/22-macos-run-test.sh 传入）优先；
+#   2) 没传时用构建时注入的 /tests/phase.sh（还是可以用 TEST= 固定一个默认值）。
+# 这样一次构建就能跑任意阶段测试，且不会把测试跑错。
+# ---------------------------------------------------------------------------
+PHASE=/tests/phase.sh
+CMDLINE_TEST=$(tr ' ' '\n' < /proc/cmdline 2>/dev/null | sed -n 's/^test=//p' | head -1)
+if [ -n "$CMDLINE_TEST" ]; then
+    # 命令行明确指定了就一律用它：如果脚本不存在，后面的检查会直接报失败，
+    # 而不是静默回退到默认脚本（否则会“跑错测试却看起来跑了测试”）。
+    PHASE="/tests/phases/$CMDLINE_TEST.sh"
+    TEST_NAME="$CMDLINE_TEST"
+fi
+
 echo ""
 echo "============================================================"
 echo "[TEST:START] $TEST_NAME"
-echo "内核: $KVER / $(uname -m)"
+echo "内核: $KVER / $(uname -m)   阶段脚本: $PHASE"
 echo "============================================================"
 
 . /tests/lib.sh
@@ -59,11 +79,11 @@ fi
 # ---------------------------------------------------------------------------
 # 执行阶段测试脚本
 # ---------------------------------------------------------------------------
-if [ -f /tests/phase.sh ]; then
+if [ -f "$PHASE" ]; then
     # shellcheck disable=SC1091
-    . /tests/phase.sh
+    . "$PHASE"
 else
-    fail "phase.sh 存在" "/tests/phase.sh 未注入（构建时未指定 TEST=）"
+    fail "阶段脚本存在" "$PHASE 不存在（tests/phases/ 下没有这个阶段脚本）"
 fi
 
 echo ""
