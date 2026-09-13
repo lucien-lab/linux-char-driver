@@ -79,6 +79,6 @@ fi
 cp "$TMP/virt-sensor.dts" "$PROJ/artifacts/virt-sensor.dts"
 
 echo
-echo "生成的传感器节点："
-grep -A7 "sensor_char" "$PROJ/artifacts/virt-sensor.dts" | sed 's/^/  /'
+echo "生成的传感器节点（I2C 控制器 + 子设备，由 i2c 核心从设备树枚举）："
+grep -A12 -E 'virt-i2c \{' "$PROJ/artifacts/virt-sensor.dts" | sed 's/^/  /'
 ls -lh "$PROJ/artifacts/virt-sensor.dtb"

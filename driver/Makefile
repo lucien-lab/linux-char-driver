@@ -9,6 +9,7 @@
 # KDIR 指向已配置好的内核源码树（需要先跑过 make modules_prepare 或完整编译）。
 
 obj-m += sensor_char.o
+obj-m += virt_i2c.o
 
 KDIR ?= /lib/modules/$(shell uname -r)/build
 PWD  := $(shell pwd)
@@ -22,6 +23,6 @@ clean:
 # 同步编译产物到指定目录（例如 rootfs 或共享目录）
 install: all
 	install -d $(DESTDIR)
-	install -m 644 sensor_char.ko $(DESTDIR)/
+	install -m 644 $(patsubst %.o,%.ko,$(obj-m)) $(DESTDIR)/
 
 .PHONY: all clean install

@@ -18,10 +18,23 @@ check_exists "设备节点 /dev/sensor0 存在" /dev/sensor0
 
 info "== 2) probe 流程日志 =="
 dmesg > /tmp/probe.txt 2>/dev/null
-check_contains "设备树解析到 i2c-bus/sensor-addr" /tmp/probe.txt "DT: i2c-bus=0 sensor-addr=0x48"
-check_contains "I2C 客户端创建成功" /tmp/probe.txt "i2c client on bus 0 addr 0x48"
+check_contains "从设备树读到从机地址与采样周期" /tmp/probe.txt "probe: i2c client addr=0x48 interval=500ms"
+check_contains "芯片在位探测成功（regmap 读配置寄存器）" /tmp/probe.txt "chip detected: config="
 check_contains "虚拟中断请求注册成功" /tmp/probe.txt "irq registered: virq="
 check_contains "字符设备注册成功" /tmp/probe.txt "probe done: major="
+
+info "== 2b) I2C 从设备由设备树枚举并绑定到驱动 =="
+# 阶段 02 把平台驱动改成了标准 i2c_driver，这里的检查项相应地从
+# "看某句日志" 换成 "看内核真的建出了 i2c 从设备并绑定了驱动"：
+# 功能性等价（甚至更强），因为它验证的是内核对象而不是 printk。
+I2CDEV=$(ls -d /sys/bus/i2c/devices/*-0048 2>/dev/null | head -1)
+check_nonempty "i2c 从设备节点存在（<bus>-0048）" "$I2CDEV"
+if [ -n "$I2CDEV" ]; then
+    cat "$I2CDEV/name" > /tmp/i2cname.txt 2>/dev/null
+    check_contains "从设备名来自设备树 compatible（sensor-char）" /tmp/i2cname.txt "sensor-char"
+    readlink -f "$I2CDEV/driver" > /tmp/i2cdrv.txt 2>/dev/null
+    check_contains "从设备已绑定到 sensor_char 驱动" /tmp/i2cdrv.txt "sensor_char"
+fi
 
 info "== 3) 用户态数据通路（read / ioctl / write）=="
 /bin/sensor_test > /tmp/utest.txt 2>&1

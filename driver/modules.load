@@ -2,7 +2,12 @@
 # 由 scripts/13-vm-fast-cycle.sh 读取并写入 initramfs 的 /etc/modules.load
 #
 # 顺序有依赖关系，不要随意调换：
-#   1) i2c-stub  提供虚拟 I2C 适配器（i2c 总线 0），参数 chip_addr 指定模拟从机地址
-#   2) sensor_char  传感器字符设备驱动，probe 时通过 i2c_get_adapter 找到总线 0
-i2c-stub.ko chip_addr=0x48
+#   1) virt_i2c     虚拟 I2C 控制器：由设备树 compatible = "lucien,virt-i2c" 匹配，
+#                   注册带 of_node 的 i2c_adapter，并模拟芯片寄存器。
+#                   它一注册，i2c 核心就会从设备树枚举出子节点 sensor@48，
+#                   创建 i2c client（此时若 sensor_char 还没加载，client 处于未绑定状态）。
+#   2) sensor_char  标准 i2c_driver：注册时 i2c 核心立刻与已有 client 匹配 → probe(client)。
+#
+# 注意：不再需要 i2c-stub（它的 adapter 没有设备树节点，无法枚举子设备）。
+virt_i2c.ko
 sensor_char.ko

@@ -5,13 +5,14 @@
  * ============================ 架构总览 ============================
  *
  *   [硬件层]
- *     I2C 总线（实验环境：i2c-stub 虚拟总线 i2c-0；真机：i2c-1）
- *       └── 传感器从设备（实验环境 0x48，tmp105 寄存器语义；
- *                        真机替换为 SHT30 0x44 等，只改 dts + 解析函数）
+ *     I2C 控制器（实验环境：virt_i2c.ko 提供的虚拟控制器 + 芯片寄存器级模拟；
+ *                  真机：SoC 的 i2c 控制器，例如树莓派 i2c-1）
+ *       └── 传感器从设备（实验环境 0x48；真机 SHT30 0x44 等，只改 dts + 换算函数）
+ *             从机地址写在设备树子节点 sensor@48 的 reg 属性里，由 i2c 核心自动实例化
  *
  *   [内核层]
- *     platform_driver  --设备树 compatible 匹配--> probe()
- *        ├── i2c_get_adapter() + i2c_new_client_device()  创建 i2c client
+ *     i2c_driver  --of_match_table 匹配 compatible = "lucien,sensor-char"--> probe(client)
+ *        ├── devm_regmap_init_i2c()                        寄存器访问抽象（regmap_i2c）
  *        ├── alloc_chrdev_region/cdev_add/class_create     注册字符设备
  *        └── 自建虚拟中断控制器(irq_chip + irq_domain) + request_threaded_irq
  *              ├── 上半部(hard IRQ)：只做最少的事，返回 IRQ_WAKE_THREAD
@@ -31,11 +32,12 @@
  *     驱动的 request_threaded_irq + 上下半部代码完全不变。
  *
  * ==================================================================
- * 设备树解耦要点：本文件不出现任何硬件地址/总线号字面量，全部来自 dts：
- *   compatible = "lucien,sensor-char";
- *   i2c-bus = <0>;            真机上可改用 i2c 控制器 phandle 引用
- *   sensor-addr = <0x48>;
- *   poll-interval-ms = <500>;
+ * 设备树解耦要点：本文件不出现任何硬件地址字面量，全部来自 dts：
+ *   virt-i2c 控制器节点（compatible = "lucien,virt-i2c"）
+ *     └── sensor@48   compatible = "lucien,sensor-char"; reg = <0x48>;
+ *                     poll-interval-ms = <500>;
+ *   从机地址来自子节点的 reg 属性（i2c 核心解析后填进 client->addr），
+ *   所以不再需要自定义的 i2c-bus / sensor-addr 属性。
  */
 
 #include <linux/module.h>
@@ -51,9 +53,8 @@
 #include <linux/poll.h>		/* poll_wait / fasync_helper / kill_fasync */
 #include <linux/jiffies.h>
 #include <linux/i2c.h>
+#include <linux/regmap.h>
 #include <linux/of.h>
-#include <linux/platform_device.h>
-#include <linux/of_device.h>
 #include <linux/interrupt.h>
 #include <linux/irq.h>
 #include <linux/irqdomain.h>
@@ -67,12 +68,18 @@
 #include "sensor_ioctl.h"
 
 #define DRV_NAME	"sensor_char"
-#define SENSOR_REG_TEMP	0x00	/* tmp105 温度寄存器（SHT30 为 0x0000 命令字） */
+#define SENSOR_REG_TEMP		0x00	/* 温度寄存器（只读；真机 SHT30 为 0x0000 命令字） */
+#define SENSOR_REG_HUMIDITY	0x01	/* 湿度寄存器（只读，本项目保留给 IIO 阶段使用） */
+#define SENSOR_REG_CONFIG	0x02	/* 配置寄存器（读写；probe 时用它探测芯片是否存在） */
 
 /* 阻塞 read() 等待新样本的最长时间：超时返回 -ETIMEDOUT，避免用户态永久卡死 */
 #define SENSOR_READ_TIMEOUT_MS	2000
 
-/* 传感器寄存器原始值 -> 毫摄氏度：LSB = 1/16 °C = 62.5 m°C */
+/*
+ * 传感器寄存器原始值 -> 毫摄氏度：LSB = 1/16 °C = 62.5 m°C。
+ * 必须先转成有符号 16 位再乘：寄存器在负温时是二进制补码形式，
+ * 直接拿 u16 做算术会得到 (65536 - x) 这样的大正数，负温读数就错了。
+ */
 #define RAW_TO_MILLI(raw)	((s32)(raw) * 1000 / 16)
 
 struct sensor_dev {
@@ -81,9 +88,9 @@ struct sensor_dev {
 	dev_t		devt;
 	struct device	*char_dev;
 
-	/* I2C */
-	struct i2c_adapter	*adapter;
+	/* I2C：从设备由 i2c 核心根据设备树枚举得到，驱动只持有 client */
 	struct i2c_client	*client;
+	struct regmap		*regmap;	/* 寄存器访问抽象层（后端 regmap_i2c） */
 	u32			sensor_addr;
 
 	/* 中断 */
@@ -179,34 +186,33 @@ static irqreturn_t sensor_irq_hard(int irq, void *data)
 static irqreturn_t sensor_irq_thread(int irq, void *data)
 {
 	struct sensor_dev *sd = data;
-	s32 raw;
+	unsigned int raw;
 	s32 next;
+	int ret;
 
 	mutex_lock(&sd->lock);
 
-	raw = i2c_smbus_read_word_data(sd->client, SENSOR_REG_TEMP);
-	if (raw < 0) {
+	/*
+	 * 通过 regmap 读温度寄存器。
+	 * reg_bits=8 + val_bits=16 时刻，regmap_i2c 会选择 SMBus word 后端，
+	 * 最终走到 i2c 核心的 i2c_smbus_read_word_data() -> 总线的 smbus_xfer。
+	 * 这一步会睡眠（等 I2C 传输完成），所以只能在线程化下半部做。
+	 */
+	ret = regmap_read(sd->regmap, SENSOR_REG_TEMP, &raw);
+	if (ret) {
 		sd->i2c_errors++;
 		dev_warn_ratelimited(&sd->client->dev,
-				     "I2C read failed: %d\n", raw);
+				     "regmap read failed: %d\n", ret);
 		mutex_unlock(&sd->lock);
 		return IRQ_HANDLED;
 	}
 
 	/*
-	 * 模拟真实传感器数据变化：
-	 * 实验环境的 i2c-stub 寄存器是可读写的，这里读出后小幅改动再写回，
-	 * 让数据在 22.000 ~ 28.000 °C 之间缓慢变化。
-	 * 真机请删除这段写回逻辑，直接使用 raw。
+	 * 原始值 -> 毫摄氏度。
+	 * 数据由 virt_i2c.ko 里的"芯片"按内部计数确定性地变化（24.0~26.0 °C），
+	 * 驱动只负责换算；真机上这里换成 SHT30 的转换公式，其余代码不变。
 	 */
 	next = RAW_TO_MILLI(raw);
-	if (sd->latest.seq == 0)
-		next = 25000;
-	next += ((sd->latest.seq % 16) < 8) ? 100 : -100;	/* ±0.1 °C 锯齿 */
-	if (next > 28000)
-		next = 22000;
-	i2c_smbus_write_word_data(sd->client, SENSOR_REG_TEMP,
-				  (s16)(next * 16 / 1000));
 
 	sd->latest.seq++;
 	sd->latest.temp_milli = next;
@@ -541,64 +547,97 @@ err_unregister:
 	return ret;
 }
 
-/* ============================ 设备树匹配 + probe ============================ */
+/* ============================ i2c_driver probe ============================ */
+/*
+ * 与旧实现（platform_driver + i2c_get_adapter）的区别，以及为什么这么改：
+ *
+ *   旧：platform_driver 自己从设备树里读总线号/从机地址，再 i2c_get_adapter()
+ *       + i2c_new_client_device() 手工造一个 i2c client。这是"板级文件（board file）"
+ *       时代的做法；在设备树体系里属于绕路：拿不到 i2c 核心的自动枚举与匹配，
+ *       从设备的生命周期、电源管理、驱动绑定关系都由驱动自己维护。
+ *
+ *   新：驱动注册为 i2c_driver。总线控制器（virt_i2c.ko）注册带 of_node 的 adapter 时，
+ *       i2c 核心会调用 of_i2c_register_devices() 遍历其子节点，把 sensor@48
+ *       实例化成 i2c client，再按 of_match_table 匹配到本驱动并调用 probe(client)。
+ *       从机地址来自子节点的 reg 属性（client->addr），驱动不再解析地址。
+ *
+ * regmap 配置：寄存器 8 位、数据 16 位。
+ *   regmap_i2c 在"适配器声明了 I2C_FUNC_SMBUS_WORD_DATA"时会选择 SMBus word 后端，
+ *   于是 regmap_read() → i2c_smbus_read_word_data() → 总线 smbus_xfer()。
+ *   如果哪天换成 8 位数据的芯片，只需把 val_bits 改成 8，上层代码不用动 ——
+ *   这正是引入 regmap 的价值：把"寄存器访问的位宽/字节序/缓存"从驱动逻辑里剥离。
+ *
+ * 【必填 val_format_endian —— 本项目踩过的真实坑】
+ *   regmap 的 regmap_get_val_endian() 在设备树/平台数据都没声明字节序时**默认返回 BIG**，
+ *   于是会选择 regmap_smbus_word_swapped 后端，对读回的 16 位值做 swab16()。
+ *   而 SMBus word 协议本身是"低字节在前"（即小端），我们的芯片（virt_i2c）也是
+ *   直接把值放进 data->word，结果就是温度被字节交换后的乱码
+ *   （实测 25.0 ℃ 被读成 2304 ℃ 量级）。显式声明 LITTLE 后，regmap 改用
+ *   regmap_smbus_word（不交换），读值才正确。
+ *   真实驱动里这一步同样必须写清楚——比如很多传感器数据手册写的就是
+ *   "little endian"，而 regmap 不会替你做默认假设。
+ */
+static const struct regmap_config sensor_regmap_cfg = {
+	.reg_bits		= 8,
+	.val_bits		= 16,
+	.max_register		= SENSOR_REG_CONFIG,
+	.val_format_endian	= REGMAP_ENDIAN_LITTLE,
+};
 
-static int sensor_probe(struct platform_device *pdev)
+static int sensor_probe(struct i2c_client *client)
 {
-	struct device *dev = &pdev->dev;
+	struct device *dev = &client->dev;
 	struct device_node *np = dev->of_node;
 	struct sensor_dev *sd;
-	struct i2c_board_info info = {};
-	u32 bus = 0, addr = 0x48, interval = 500;
+	unsigned int cfg;
+	u32 interval = 500;
 	int ret;
 
-	/* 1. 从设备树取参数——驱动里不写死任何硬件信息 */
-	of_property_read_u32(np, "i2c-bus", &bus);
-	of_property_read_u32(np, "sensor-addr", &addr);
+	/* 1. 设备树参数：只解析自定义属性；从机地址由 reg 属性经 i2c 核心填进 client->addr */
 	of_property_read_u32(np, "poll-interval-ms", &interval);
-	dev_info(dev, "DT: i2c-bus=%u sensor-addr=0x%02x interval=%ums\n",
-		 bus, addr, interval);
+	dev_info(dev, "probe: i2c client addr=0x%02x interval=%ums\n",
+		 client->addr, interval);
 
 	sd = devm_kzalloc(dev, sizeof(*sd), GFP_KERNEL);
 	if (!sd)
 		return -ENOMEM;
 
-	sd->sensor_addr = addr;
+	sd->client = client;
+	sd->sensor_addr = client->addr;
 	sd->interval_ms = interval;
 	mutex_init(&sd->lock);
 	init_waitqueue_head(&sd->wq);
-	platform_set_drvdata(pdev, sd);
+	i2c_set_clientdata(client, sd);
 
-	/* 2. 接上 I2C 子系统：拿 adapter，再在它上面创建从设备 client */
-	sd->adapter = i2c_get_adapter(bus);
-	if (!sd->adapter) {
-		/*
-		 * 总线还没就绪时返回 -EPROBE_DEFER，内核会在稍后自动重试 probe。
-		 * 这是设备树驱动里处理依赖顺序的标准手段（尤其真机上 i2c 控制器较晚注册）。
-		 */
-		dev_warn(dev, "i2c bus %u not ready, defer probe\n", bus);
-		return -EPROBE_DEFER;
+	/* 2. 寄存器访问统一走 regmap */
+	sd->regmap = devm_regmap_init_i2c(client, &sensor_regmap_cfg);
+	if (IS_ERR(sd->regmap)) {
+		ret = PTR_ERR(sd->regmap);
+		dev_err(dev, "regmap init failed: %d\n", ret);
+		return ret;
 	}
 
-	strscpy(info.type, "sensor_demo", I2C_NAME_SIZE);
-	info.addr = addr;
-	sd->client = i2c_new_client_device(sd->adapter, &info);
-	if (IS_ERR(sd->client)) {
-		ret = PTR_ERR(sd->client);
-		dev_err(dev, "failed to create i2c client: %d\n", ret);
-		goto err_put_adapter;
+	/*
+	 * 3. 探测芯片是否真的在总线上：读一次配置寄存器。
+	 *    真机上是同样的做法（读 WHO_AM_I / 配置寄存器确认硬件在位）。
+	 *    读失败说明从设备不应答，直接让 probe 失败，不要带着半死不活的设备继续跑。
+	 */
+	ret = regmap_read(sd->regmap, SENSOR_REG_CONFIG, &cfg);
+	if (ret) {
+		dev_err(dev, "chip not responding (regmap_read=%d)\n", ret);
+		return ret;
 	}
-	dev_info(dev, "i2c client on bus %d addr 0x%02x\n",
-		 sd->adapter->nr, addr);
+	dev_info(dev, "chip detected: config=0x%04x -> enable continuous conversion\n", cfg);
+	regmap_write(sd->regmap, SENSOR_REG_CONFIG, 0x0000);
 
-	/* 3. 注册字符设备 -> /dev/sensor0 */
+	/* 4. 注册字符设备 -> /dev/sensor0 */
 	ret = sensor_chrdev_register(sd);
 	if (ret) {
 		dev_err(dev, "chrdev register failed: %d\n", ret);
-		goto err_unreg_client;
+		return ret;
 	}
 
-	/* 4. 中断：实验环境自建虚拟中断源，真机换成传感器 ALERT 引脚对应的 IRQ */
+	/* 5. 中断：实验环境自建虚拟中断源，真机换成传感器 ALERT 引脚对应的 IRQ */
 	sd->irq_domain = irq_domain_create_linear(NULL, 1,
 						   &sensor_irq_domain_ops, NULL);
 	if (IS_ERR(sd->irq_domain)) {
@@ -624,8 +663,7 @@ static int sensor_probe(struct platform_device *pdev)
 	}
 	dev_info(dev, "irq registered: virq=%d\n", sd->virq);
 
-	/* 5. 初始化传感器寄存器（写初值 25.0 °C），并启动采样定时器 */
-	i2c_smbus_write_word_data(sd->client, SENSOR_REG_TEMP, 25 * 16);
+	/* 6. 启动采样定时器（真机上这一步由传感器的 DRDY/ALERT 中断替代） */
 	hrtimer_init(&sd->timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
 	sd->timer.function = sensor_timer_fn;
 	hrtimer_start(&sd->timer, ms_to_ktime(sd->interval_ms), HRTIMER_MODE_REL);
@@ -640,20 +678,12 @@ err_unreg_chrdev:
 	device_destroy(sensor_class, sd->devt);
 	cdev_del(&sd->cdev);
 	unregister_chrdev_region(sd->devt, 1);
-err_unreg_client:
-	i2c_unregister_device(sd->client);
-err_put_adapter:
-	i2c_put_adapter(sd->adapter);
 	return ret;
 }
 
-/*
- * 注意：6.6 内核里 platform_driver.remove 的返回类型是 int（这是历史遗留，
- * 返回值会被驱动核心忽略）；更新的内核提供了 void 返回的 .remove_new()。
- */
-static int sensor_remove(struct platform_device *pdev)
+static void sensor_remove(struct i2c_client *client)
 {
-	struct sensor_dev *sd = platform_get_drvdata(pdev);
+	struct sensor_dev *sd = i2c_get_clientdata(client);
 
 	hrtimer_cancel(&sd->timer);		/* 停掉采样源 */
 	free_irq(sd->virq, sd);
@@ -661,26 +691,38 @@ static int sensor_remove(struct platform_device *pdev)
 	device_destroy(sensor_class, sd->devt);
 	cdev_del(&sd->cdev);
 	unregister_chrdev_region(sd->devt, 1);
-	i2c_unregister_device(sd->client);
-	i2c_put_adapter(sd->adapter);
-	dev_info(&pdev->dev, "removed\n");
-	return 0;
+	/* i2c client 由 i2c 核心根据设备树实例化，卸载时由核心释放，驱动不需要管 */
+	dev_info(&client->dev, "removed\n");
 }
 
-/* compatible 列表：内核用它与 dts 节点的 compatible 匹配（设备树解耦的关键） */
+/*
+ * 两张匹配表，作用不同：
+ *   of_match_table —— 设备树匹配（设备树里 compatible = "lucien,sensor-char"），
+ *                     这是设备树体系里的主路径；
+ *   id_table       —— 传统名字匹配（板级文件/非设备树场景仍然用得上），
+ *                     同时也是 i2c 核心做"驱动-设备"匹配的后备路径。
+ * MODULE_DEVICE_TABLE 会把它们导出到模块信息里，供 udev / modules.alias 使用。
+ */
 static const struct of_device_id sensor_of_match[] = {
 	{ .compatible = "lucien,sensor-char" },
 	{ }
 };
 MODULE_DEVICE_TABLE(of, sensor_of_match);
 
-static struct platform_driver sensor_platform_driver = {
-	.probe		= sensor_probe,
-	.remove		= sensor_remove,
+static const struct i2c_device_id sensor_id[] = {
+	{ "sensor_char", 0 },
+	{ }
+};
+MODULE_DEVICE_TABLE(i2c, sensor_id);
+
+static struct i2c_driver sensor_i2c_driver = {
 	.driver		= {
 		.name		= DRV_NAME,
 		.of_match_table	= sensor_of_match,
 	},
+	.probe		= sensor_probe,
+	.remove		= sensor_remove,
+	.id_table	= sensor_id,
 };
 
 static int __init sensor_init(void)
@@ -692,7 +734,13 @@ static int __init sensor_init(void)
 	if (IS_ERR(sensor_class))
 		return PTR_ERR(sensor_class);
 
-	ret = platform_driver_register(&sensor_platform_driver);
+	/*
+	 * 注册 i2c 驱动。此时设备树里的 sensor@48 可能已经被 virt_i2c 枚举成 i2c client
+	 * （取决于模块加载顺序）：若已存在，i2c_add_driver() 会立即触发匹配并 probe；
+	 * 若尚不存在，等 virt_i2c 注册 adapter 时再匹配。
+	 * 两条路径都由内核负责，驱动不需要写任何等待逻辑 —— 这是总线模型带来的好处。
+	 */
+	ret = i2c_add_driver(&sensor_i2c_driver);
 	if (ret) {
 		class_destroy(sensor_class);
 		return ret;
@@ -703,7 +751,7 @@ static int __init sensor_init(void)
 
 static void __exit sensor_exit(void)
 {
-	platform_driver_unregister(&sensor_platform_driver);
+	i2c_del_driver(&sensor_i2c_driver);
 	class_destroy(sensor_class);
 	pr_info(DRV_NAME ": unloaded\n");
 }
