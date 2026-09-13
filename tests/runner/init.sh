@@ -66,8 +66,15 @@ if [ -f /etc/modules.load ]; then
         [ -n "$line" ] || continue
         case "$line" in \#*) continue ;; esac
         mod=$(echo "$line" | awk '{print $1}')
-        args=$(echo "$line" | cut -d' ' -f2-)
-        echo "--- insmod $mod $args ---"
+        # 注意：不要用 `cut -d' ' -f2-`。行内没有空格时 cut 会把整行原样返回，
+        # 于是模块文件名被当成模块参数传给 insmod，内核每次都打印
+        # "unknown parameter 'sensor_char.ko' ignored"（既污染日志，又会掩盖真正写错的参数）。
+        args=$(echo "$line" | awk '{$1=""; sub(/^[ \t]+/, ""); print}')
+        if [ -n "$args" ]; then
+            echo "--- insmod $mod $args ---"
+        else
+            echo "--- insmod $mod ---"
+        fi
         # shellcheck disable=SC2086
         insmod "/lib/modules/$KVER/$mod" $args
         if [ $? -ne 0 ]; then
