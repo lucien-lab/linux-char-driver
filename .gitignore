@@ -1,0 +1,17 @@
+# 内核源码树与下载包（1.7GB，不入库）
+kernel-src/
+# 构建产物
+artifacts/
+rootfs/
+*.ko
+*.o
+*.mod
+*.mod.c
+*.order
+*.symvers
+.tmp_versions/
+# 用户态可执行文件（由源码构建）
+user/sensor_test
+user/*.bin
+# QEMU 串口日志（作为验证证据保留在 logs/，但体积较大时可按需清理）
+logs/*.log

@@ -1,0 +1,8 @@
+# 内核模块加载顺序（每行：模块文件名 [参数...]）
+# 由 scripts/13-vm-fast-cycle.sh 读取并写入 initramfs 的 /etc/modules.load
+#
+# 顺序有依赖关系，不要随意调换：
+#   1) i2c-stub  提供虚拟 I2C 适配器（i2c 总线 0），参数 chip_addr 指定模拟从机地址
+#   2) sensor_char  传感器字符设备驱动，probe 时通过 i2c_get_adapter 找到总线 0
+i2c-stub.ko chip_addr=0x48
+sensor_char.ko

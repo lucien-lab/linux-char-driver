@@ -1,0 +1,47 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * sensor-char.dtsi - 设备树节点片段（追加到目标板 dts 的根节点下）
+ *
+ * 设备树三要素与本驱动的对应关系：
+ *   compatible        <-> sensor_of_match[] 里的 "lucien,sensor-char"（匹配即 probe）
+ *   i2c-bus           <-> probe() 里 of_property_read_u32(np, "i2c-bus") -> i2c_get_adapter()
+ *   sensor-addr       <-> i2c_board_info.addr -> i2c_new_client_device()
+ *   poll-interval-ms  <-> hrtimer 初始周期（真机上无此属性时用中断驱动，不轮询）
+ *
+ * 实验环境（QEMU virt + i2c-stub）用法：
+ *   qemu-system-aarch64 -M virt,dumpdtb=virt.dtb ...
+ *   dtc -I dtb -O dts virt.dtb > virt.dts
+ *   把下面这段贴进 virt.dts 的根节点，再 dtc 编译回 dtb，用 -dtb 传给 QEMU。
+ *
+ * 真机（树莓派等）用法：这段直接写进板级 dts/overlay 即可，无需虚拟总线。
+ */
+
+/ {
+	sensor_char: sensor-char@0 {
+		compatible = "lucien,sensor-char";
+		reg = <0x00>;
+		i2c-bus = <0>;			/* i2c-stub 创建的虚拟总线编号 */
+		sensor-addr = <0x48>;		/* 传感器 7 位 I2C 地址 */
+		poll-interval-ms = <500>;	/* 采样周期 */
+		status = "okay";
+	};
+};
+
+/*
+ * 真机参考写法（树莓派 + SHT30，挂在真实 I2C 控制器下）：
+ *
+ * &i2c1 {
+ *     status = "okay";
+ *     clock-frequency = <100000>;
+ *     sensor_char: sensor@44 {
+ *         compatible = "lucien,sensor-char";
+ *         reg = <0x44>;
+ *         poll-interval-ms = <1000>;
+ *     };
+ * };
+ *
+ * 对应驱动改动只有两处：
+ *   1) 用 of_find_i2c_adapter_by_node() 从父节点拿 adapter（而非 i2c-bus 编号）
+ *   2) sensor_irq_thread() 里按 SHT30 的命令字读数据（i2c_smbus_write_i2c_block_data
+ *      + i2c_master_recv），解析公式换成 SHT30 的 -45 + 175*S/65535
+ */
