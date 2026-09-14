@@ -10,6 +10,8 @@
 
 obj-m += sensor_char.o
 obj-m += virt_i2c.o
+# IIO 子系统版驱动（阶段 05）：与字符设备版并存，用另一颗同型号芯片（0x49）避免争抢。
+obj-m += sensor_iio.o
 
 # KUnit 单元测试模块（阶段 06）：只测纯逻辑（sensor_calc.h），
 # 不参与正常功能，因此单独一个 .ko，由阶段 06 的测试脚本按需 insmod。

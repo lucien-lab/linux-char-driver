@@ -36,6 +36,8 @@ check_true "interval_ms 是数字（${IV}）"  "$(echo "$IV" | grep -cE '^[0-9]+
 check_true "seq 是数字（${SEQ}）"          "$(echo "$SEQ" | grep -cE '^[0-9]+$')" "1"
 check_true "i2c_errors 是数字（${IE}）"    "$(echo "$IE" | grep -cE '^[0-9]+$')" "1"
 check_true "ring_capacity 是数字（${RC}）" "$(echo "$RC" | grep -cE '^[0-9]+$')" "1"
+# 与阶段 03 对齐：容量必须是 kfifo 向上取整后的真实值（85），不能是请求值 64
+check_eq "ring_capacity 为真实容量 85（非请求值 64）" "85" "$RC"
 
 # ring_capacity 必须反映 kfifo 的**实际**容量（向上取整到 2 的幂后是 85），
 # 而不是驱动请求的 64：用户态要用它判断"满没满"，必须拿到真实值。
@@ -142,6 +144,32 @@ check_contains "用户态测试正常结束" /tmp/utest04.txt "测试结束"
 # 归还在步骤 8 持有的 runtime PM 引用（之后设备可再次自动挂起）
 exec 3<&- 2>/dev/null
 exec 3>&- 2>/dev/null
+
+info "== 9b) 卸载/重载的资源清理（覆盖缺口：清理路径此前无回归检查）=="
+# 为什么需要：验证者做破坏性负控（删掉 debugfs_remove_recursive）时，内核打印
+#   debugfs: Directory 'sensor_char' ... already present!
+# 且驱动降级为 debugfs=unavailable，但当时 42 项检查全绿 —— 说明清理路径完全没有回归覆盖。
+# 注意：sysfs 属性组挂在类设备上，类销毁会连带清理，所以"漏 sysfs_remove_group"可能不可观测；
+# 而 debugfs 目录是独立于设备模型的，漏删一定会在重载时报 "already present"。
+KVER=$(uname -r)
+rmmod sensor_char 2>/dev/null
+sleep 1
+if [ -d /sys/kernel/debug/sensor_char ]; then
+	fail "卸载后 debugfs 目录已清理" "/sys/kernel/debug/sensor_char 仍存在（debugfs_remove_recursive 缺失？）"
+else
+	pass "卸载后 debugfs 目录已清理"
+fi
+if [ -d /sys/class/sensor_char ]; then
+	fail "卸载后 sysfs 类目录已清理" "/sys/class/sensor_char 仍存在（类销毁/注销不完整？）"
+else
+	pass "卸载后 sysfs 类目录已清理"
+fi
+insmod "/lib/modules/$KVER/sensor_char.ko"
+sleep 1
+check_exists "重新加载后设备节点恢复" /dev/sensor0
+ALREADY=$(dmesg | grep -c "already present")
+check_eq "重载时没有 debugfs 重复创建报错（already present 计数）" "0" "$ALREADY"
+check_exists "重新加载后 sysfs 属性恢复" $SYS/interval_ms
 
 info "== 10) 内核告警检查（测试体之后重新取样）=="
 dmesg > /tmp/dmesg04.txt 2>/dev/null

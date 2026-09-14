@@ -9,13 +9,13 @@
 #   2. 打印 [TEST:START] 标记（供 macOS 侧解析）
 #   3. 按 /etc/modules.load 顺序 insmod 内核模块
 #   4. 执行 /tests/phase.sh（由 fast-cycle 脚本按 TEST=<阶段> 注入）
-#   5. 打印 [TEST:END] pass=<n> fail=<n>，同步磁盘后关机
+#   5. 打印 [TEST:END] pass=<n> fail=<n> skip=<k>，同步磁盘后关机
 #
 # 结果标记协议（macOS 侧解析用）：
 #   [TEST:START] <阶段名>
 #   [CHECK:PASS] <检查项>
 #   [CHECK:FAIL] <检查项> -- <原因>
-#   [TEST:END]   <阶段名> pass=N fail=M
+#   [TEST:END]   <阶段名> pass=N fail=M skip=K
 # ============================================================================
 
 mount -t proc     none /proc     2>/dev/null
@@ -102,7 +102,7 @@ fi
 
 echo ""
 echo "============================================================"
-echo "[TEST:END] $TEST_NAME pass=$CHECK_PASS fail=$CHECK_FAIL"
+echo "[TEST:END] $TEST_NAME pass=$CHECK_PASS fail=$CHECK_FAIL skip=$CHECK_SKIP"
 echo "============================================================"
 
 # 保存 dmesg 便于事后分析（busybox dmesg -n 输出全部）

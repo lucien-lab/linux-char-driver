@@ -65,12 +65,21 @@ wait $QPID 2>/dev/null
 # ---------------------------------------------------------------------------
 PASS_N=$(grep -c '\[CHECK:PASS\]' "$LOG" 2>/dev/null || true)
 FAIL_N=$(grep -c '\[CHECK:FAIL\]' "$LOG" 2>/dev/null || true)
+SKIP_N=$(grep -c '\[CHECK:SKIP\]' "$LOG" 2>/dev/null || true)
 ENDED=$(grep -c '\[TEST:END\]' "$LOG" 2>/dev/null || true)
-PASS_N=${PASS_N:-0}; FAIL_N=${FAIL_N:-0}; ENDED=${ENDED:-0}
+PASS_N=${PASS_N:-0}; FAIL_N=${FAIL_N:-0}; SKIP_N=${SKIP_N:-0}; ENDED=${ENDED:-0}
+
+# SKIP 的语义：本次没取得证据（例如放大器窗口未被宿主调度命中）。
+# 它不算失败，但**必须显眼**：下面会把每条 SKIP 连同原因列出来，
+# 避免"没验到"被当成"验过了"。
 
 echo
 echo "================= 检查项明细 ================="
 grep -E '\[CHECK:(PASS|FAIL)\]' "$LOG" | sed 's/^/  /' || true
+if [ "${SKIP_N}" -gt 0 ]; then
+    echo "  --- 未取得证据（SKIP，不算通过也不算失败）---"
+    grep '\[CHECK:SKIP\]' "$LOG" | sed 's/^/  /'
+fi
 echo
 
 # 内核层面的异常信号（不一定算 FAIL，但必须人工关注）
@@ -82,6 +91,7 @@ echo "================= 结论 ================="
 echo "  阶段      : ${TEST}"
 echo "  检查通过  : ${PASS_N}"
 echo "  检查失败  : ${FAIL_N}"
+echo "  未取得证据: ${SKIP_N}"
 echo "  跑到结束  : $([ "${ENDED}" -gt 0 ] && echo 是 || echo '否（超时或中途卡死）')"
 echo "  内核 panic: ${PANIC}"
 echo "  内核告警  : ${WARN}"
@@ -104,5 +114,8 @@ if [ "${PANIC}" -gt 0 ]; then
 fi
 
 echo
-echo "  ✅ 全部检查项通过（内核告警数: ${WARN}）"
+echo "  ✅ 全部检查项通过（内核告警数: ${WARN}，未取得证据: ${SKIP_N}）"
+if [ "${SKIP_N}" -gt 0 ]; then
+    echo "     注：有 ${SKIP_N} 项未取得证据，已在上面列出原因；这些项不能当作通过。"
+fi
 exit 0

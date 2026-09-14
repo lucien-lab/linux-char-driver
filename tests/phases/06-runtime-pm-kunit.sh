@@ -60,7 +60,6 @@ info "空闲 3 秒后 runtime_status = $ST_IDLE"
 check_eq "无使用者时自动挂起" "suspended" "$ST_IDLE"
 
 info "== 3) 打开设备 -> active（resume 重新启动采样）=="
-dmesg -c > /dev/null 2>/dev/null
 if exec 3<>/dev/sensor0; then
 	pass "打开设备成功（fd 3 持有引用）"
 else
@@ -93,6 +92,9 @@ IRQ_B=$(sed -n 's/.* irq=\([0-9]*\) .*/\1/p' $DBG/stats 2>/dev/null | head -1)
 info "挂起 2 秒：seq $SEQ_A -> ${SEQ_B}，irq $IRQ_A -> $IRQ_B"
 check_eq "挂起期间样本序号冻结" "$SEQ_A" "$SEQ_B"
 check_eq "挂起期间中断计数冻结" "$IRQ_A" "$IRQ_B"
+# 直接证据：seq/irq 冻结不足以证明 hrtimer 真停（只 disable_irq 也能冻结计数），
+# 所以驱动把 hrtimer_active() 打进了挂起日志，这里断言它为 0。
+check_contains "挂起时定时器确实已停止（timer_active=0）" /tmp/dmesg_suspend.txt "runtime suspend: sampling stopped (timer_active=0"
 
 info "== 6) 挂起期间改周期只记账，不弄醒设备 =="
 echo 200 > $SYS/interval_ms
@@ -141,17 +143,22 @@ info "runtime_suspended_time = ${SUSP_TIME}ms"
 check_gt "累计挂起时间 > 0" "${SUSP_TIME:-0}" 0
 
 info "== 10) KUnit 单元测试 =="
-dmesg -c > /dev/null 2>/dev/null	# 清空缓冲区，只留本模块输出，避免误判
+# 注意：这里**不能** dmesg -c。清缓冲区会把挂起阶段的告警一起清掉，
+# 使第 11 步的告警检查形同虚设（阶段 06 验证者 NC-B2 实证：出现了
+# "Unbalanced enable for IRQ"/WARNING 却仍判 PASS）。KUnit 输出用特征串筛即可。
 insmod "/lib/modules/$KVER/sensor_kunit.ko"
 sleep 1
 dmesg > /tmp/kunit.txt 2>/dev/null
 check_contains "KUnit 套件已执行（Subtest: sensor_calc）" /tmp/kunit.txt "Subtest: sensor_calc"
-# 本内核的 KUnit 输出是 KTAP v1 格式： "ok 1 <用例名>"（用例名与序号之间是空格，不是 "-"）
-check_contains "零点用例通过" /tmp/kunit.txt "ok .* sensor_raw_to_milli_boundaries"
-check_contains "芯片工作区间用例通过" /tmp/kunit.txt "ok .* sensor_raw_to_milli_chip_range"
-check_contains "高 4 位状态位用例通过" /tmp/kunit.txt "ok .* sensor_raw_to_milli_ignores_high_bits"
-check_contains "周期边界用例通过" /tmp/kunit.txt "ok .* sensor_interval_valid_bounds"
-check_contains "环缓冲回绕用例通过" /tmp/kunit.txt "ok .* sensor_fifo_next_wraps"
+# 本内核的 KUnit 输出是 KTAP v1 格式，且经 dmesg 后每行形如：
+#   [  364.791396]     ok 2 sensor_raw_to_milli_chip_range
+# 注意：断言必须排除 "not ok" 行（否则失败用例也会被判"通过"，阶段 06 验证者用 NC-B 实证过）。
+# 技巧：锚定 dmesg 前缀的 "]" 之后紧跟的 ok —— "not ok" 行里 ok 前面是空格，不会被匹配。
+check_contains "零点用例通过" /tmp/kunit.txt "] *ok [0-9]* *sensor_raw_to_milli_boundaries"
+check_contains "芯片工作区间用例通过" /tmp/kunit.txt "] *ok [0-9]* *sensor_raw_to_milli_chip_range"
+check_contains "高 4 位状态位用例通过" /tmp/kunit.txt "] *ok [0-9]* *sensor_raw_to_milli_ignores_high_bits"
+check_contains "周期边界用例通过" /tmp/kunit.txt "] *ok [0-9]* *sensor_interval_valid_bounds"
+check_contains "环缓冲回绕用例通过" /tmp/kunit.txt "] *ok [0-9]* *sensor_fifo_next_wraps"
 check_contains "套件汇总为 5 通过 0 失败" /tmp/kunit.txt "sensor_calc: pass:5 fail:0"
 NOTOK=$(grep -c "not ok" /tmp/kunit.txt)
 check_eq "KUnit 没有失败用例（not ok 计数）" "0" "$NOTOK"

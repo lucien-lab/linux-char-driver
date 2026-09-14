@@ -72,7 +72,7 @@
 #include <linux/kfifo.h>		/* 采样环形缓冲 */
 #include <linux/mm.h>			/* remap_pfn_range / __get_free_pages / VM_* 标志 */
 #include <linux/seqlock.h>		/* mmap 共享区的读写一致性（内核侧参考实现） */
-#include <linux/delay.h>		/* udelay：共享区写入窗口的测试放大器 */
+#include <linux/delay.h>		/* fsleep：共享区写入窗口的测试放大器（睡眠延时） */
 #include <linux/i2c.h>
 #include <linux/regmap.h>
 #include <linux/of.h>
@@ -163,7 +163,19 @@ struct sensor_dev {
 	 * 用户态的重试逻辑成了死代码）。正确做法是在共享区里亲手维护
 	 * 用户可见的 seq 字段，见 sensor_shm_publish()。
 	 */
-	spinlock_t		shm_lock;
+	/*
+	 * 保护共享区写入（序列化多个写者）的锁。
+	 * 用 mutex 而不是 spinlock：三个调用点都在可睡眠上下文——
+	 *   (1) sensor_irq_thread()：线程化中断下半部（内核线程，内部本来就有 mutex_lock + 会睡眠的 I2C 读）
+	 *   (2) sensor_ioctl(RESET)：进程上下文
+	 *   (3) sensor_dbg_ring_read()：debugfs 读取（进程上下文）
+	 * 换用 mutex 之后，写入窗口内的放大延时才可以安全地**睡眠**（见 sensor_shm_publish 注释），
+	 * 这是把"放大器检查间歇失败"变成确定性可复现的关键。
+	 *
+	 * 注意：锁只序列化写者；用户态读者是无锁的，
+	 * 所以 seq/数据之间的可见性仍必须靠下面显式的 smp_wmb() 保证，不能依赖锁。
+	 */
+	struct mutex		shm_lock;
 	u32			shm_writes;	/* 共享区发布次数（debugfs/证据用） */
 	unsigned int		shm_publish_delay_us;	/* 测试用：放大写入窗口，默认 0 */
 
@@ -217,7 +229,7 @@ MODULE_PARM_DESC(sensor_major, "固定主设备号，0 表示动态分配");
 static unsigned int shm_publish_delay_us;
 module_param(shm_publish_delay_us, uint, 0444);
 MODULE_PARM_DESC(shm_publish_delay_us,
-		 "调试用：在共享区写入窗口内插入延迟(µs)，放大撕裂读概率，默认 0");
+		 "调试用：在共享区写入窗口内插入睡眠延时(µs)，放大可观测窗口，默认 0");
 
 /* 把样本格式化成一行文本，便于 cat /dev/sensor0 直接观察 */
 static int format_sample(char *buf, size_t size, const struct sensor_sample *s)
@@ -277,7 +289,7 @@ static irqreturn_t sensor_irq_hard(int irq, void *data)
  *     seq++（→ 奇数）            s1 = seq
  *     smp_wmb()                  （s1 为奇数 → 重试）
  *     写 header 与 samples[]     读 header 与 samples[]
- *     [可选 udelay 放大器]        s2 = seq
+ *     [可选 fsleep 放大器]        s2 = seq
  *     smp_wmb()                  若 s1 != s2 → 重试
  *     seq++（→ 偶数）            否则本次数据一致
  *
@@ -293,14 +305,20 @@ static irqreturn_t sensor_irq_hard(int irq, void *data)
  *   亲手维护 seq，并且只有这个 seq 才是与用户态的契约。
  *
  * ============================ 锁与上下文 ============================
- *   spinlock：调用者（线程化中断下半部）可以睡眠，但共享区写入极短
- *   （一条样本 24 字节），用自旋锁更简单也更直观；同时它天然阻止了
- *   "RESET 与发布并发"造成的窗口错乱。
- *   本函数在中断线程上下文调用，所以只能用它不睡眠的原语。
+ *   mutex：三个写入/读取点都在可睡眠上下文（线程化中断下半部、ioctl 进程上下文、
+ *   debugfs 读取），而且写入窗口内可能插入睡眠延时（测试放大器），所以用 mutex 而非 spinlock。
+ *   它只序列化写者，防止两个写者的奇数窗口互相错乱。
+ *
+ *   常见误解："中断里的代码不能睡眠"只适用于硬中断上半部；
+ *   request_threaded_irq 的下半部是普通内核线程，可以睡眠
+ *   （本文件在它里面本来就要 mutex_lock + 做会睡眠的 I2C 读）。
  *
  * ============================ 测试放大器 ============================
- *   shm_publish_delay_us（模块参数，默认 0）在奇数窗口内插入 udelay，
- *   把"写入中"的窗口从 ~1µs 放大到数百 µs。
+ *   shm_publish_delay_us（模块参数，默认 0）在奇数窗口内插入 **睡眠** 延时（fsleep），
+ *   把"写入中"的窗口从 ~1µs 放大到毫秒量级。
+ *   为什么必须睡眠而不能自旋：自旋会让写者占满一个 CPU，读者若被调度到同一 CPU
+ *   就在整个窗口内得不到执行机会，永远观测不到奇数值（实测同一代码连跑 3 次有 2 次失败，
+ *   并触发 sched: RT throttling）；睡眠延时让写者主动让出 CPU，观测变得确定。
  *   用途：正常写窗口只占采样周期的 10⁻⁴ 量级，读者几乎不可能自然撞上，
  *   于是"seqlock 到底管不管用"无法被观测。放大后：
  *     - 好实现：读者重试次数 > 0，且 invalid 始终为 0（证明协议真的生效）；
@@ -315,7 +333,7 @@ static void sensor_shm_publish(struct sensor_dev *sd, const struct sensor_sample
 	if (!shm)
 		return;
 
-	spin_lock(&sd->shm_lock);
+	mutex_lock(&sd->shm_lock);
 
 	seq = READ_ONCE(shm->seq) + 1;
 	WRITE_ONCE(shm->seq, seq);	/* → 奇数：写入中 */
@@ -324,9 +342,17 @@ static void sensor_shm_publish(struct sensor_dev *sd, const struct sensor_sample
 	/*
 	 * 注意：先置奇再写数据。若反过来（先写数据再置奇），
 	 * 读方可能恰好落在"数据已变、seq 仍是偶"的窗口里，直接采信错误数据。
+	 *
+	 * 放大窗口必须用**睡眠**延时（fsleep），不能用 udelay 自旋：
+	 *   本函数运行在线程化中断下半部（内核线程），上下文允许睡眠；
+	 *   而自旋会让写者在整个窗口内占满一个 CPU——若读者恰好被调度到同一个 CPU，
+	 *   它在这段时间根本得不到执行机会，于是"永远观测不到奇数值"。
+	 *   实测症状：同一代码连跑 3 次，2 次 odd_seen=0 / retries=0（检查项间歇失败），
+	 *   同时写者还因为长时间自旋触发了 sched: RT throttling。
+	 *   改成睡眠延时后，窗口内写者主动让出 CPU，检查项变得确定可复现。
 	 */
 	if (sd->shm_publish_delay_us)
-		udelay(sd->shm_publish_delay_us);
+		fsleep(sd->shm_publish_delay_us);
 
 	shm->samples[shm->write_idx] = *s;
 	/* 回绕推进共用 sensor_calc.h 的实现（回绕边界有 KUnit 覆盖） */
@@ -339,7 +365,7 @@ static void sensor_shm_publish(struct sensor_dev *sd, const struct sensor_sample
 
 	sd->shm_writes++;
 
-	spin_unlock(&sd->shm_lock);
+	mutex_unlock(&sd->shm_lock);
 }
 
 /*
@@ -795,6 +821,15 @@ static void sensor_apply_interval(struct sensor_dev *sd, unsigned long ms)
 {
 	struct device *dev = &sd->client->dev;
 
+	/*
+	 * 取一个"不唤醒设备"的引用，防止本函数执行期间设备被自动挂起：
+	 * 否则在 READ_ONCE(suspended) 与 hrtimer_start() 之间存在窗口，
+	 * autosuspend 若在此刻完成，就会留下"状态 suspended + 定时器仍在触发"
+	 * 的假省电（阶段 06 验证者发现的竞态，31 项检查抓不到）。
+	 * 用 get_noresume 而不是 get_sync：本函数在"已挂起"时应当只记账，不能把设备唤醒。
+	 */
+	pm_runtime_get_noresume(dev);
+
 	mutex_lock(&sd->lock);
 	sd->interval_ms = ms;
 	mutex_unlock(&sd->lock);
@@ -807,12 +842,14 @@ static void sensor_apply_interval(struct sensor_dev *sd, unsigned long ms)
 	 */
 	if (READ_ONCE(sd->suspended)) {
 		dev_info(dev, "interval -> %lu ms (deferred: device runtime-suspended)\n", ms);
+		pm_runtime_put_autosuspend(dev);
 		return;
 	}
 
 	hrtimer_cancel(&sd->timer);
 	hrtimer_start(&sd->timer, ms_to_ktime(ms), HRTIMER_MODE_REL);
 	dev_info(dev, "interval -> %lu ms\n", ms);
+	pm_runtime_put_autosuspend(dev);
 }
 
 
@@ -892,7 +929,7 @@ static long sensor_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 			 */
 			u32 seq;
 
-			spin_lock(&sd->shm_lock);
+			mutex_lock(&sd->shm_lock);
 			seq = READ_ONCE(sd->shm->seq) + 1;
 			WRITE_ONCE(sd->shm->seq, seq);
 			smp_wmb();
@@ -900,7 +937,7 @@ static long sensor_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 			sd->shm->write_idx = 0;
 			smp_wmb();
 			WRITE_ONCE(sd->shm->seq, seq + 1);
-			spin_unlock(&sd->shm_lock);
+			mutex_unlock(&sd->shm_lock);
 		}
 		mutex_unlock(&sd->lock);
 		break;
@@ -1101,14 +1138,14 @@ static ssize_t sensor_dbg_ring_read(struct file *file, char __user *ubuf,
 	char kbuf[640];
 	int len = 0;
 
-	spin_lock(&sd->shm_lock);
+	mutex_lock(&sd->shm_lock);
 	total = sd->shm->count;
 	widx = sd->shm->write_idx;
 	n = total > ARRAY_SIZE(snap) ? ARRAY_SIZE(snap) : total;
 	start = (widx + SENSOR_SHM_SAMPLES - n) % SENSOR_SHM_SAMPLES;
 	for (i = 0; i < n; i++)
 		snap[i] = sd->shm->samples[(start + i) % SENSOR_SHM_SAMPLES];
-	spin_unlock(&sd->shm_lock);
+	mutex_unlock(&sd->shm_lock);
 
 	len += scnprintf(kbuf + len, sizeof(kbuf) - len,
 			 "count=%u dropped=%u ring_count=%u ring_capacity=%u shm_writes=%u recent=%u\n",
@@ -1270,8 +1307,13 @@ static int sensor_runtime_suspend(struct device *dev)
 	disable_irq(sd->virq);
 	WRITE_ONCE(sd->suspended, true);
 
-	dev_info(dev, "runtime suspend: sampling stopped (irq_count=%u seq=%u)\n",
-		 sd->irq_count, sd->latest.seq);
+	/*
+	 * 把 hrtimer_active() 也打出来：seq/irq 冻结并不能证明定时器真停了
+	 * （只 disable_irq 而忘了 hrtimer_cancel 时，计数照样冻结——阶段 06 验证者
+	 * 用破坏性负控实验实证过这个盲点：只 disable_irq 而忘了 hrtimer_cancel 时，计数照样冻结）。timer_active=0 才是直接证据。
+	 */
+	dev_info(dev, "runtime suspend: sampling stopped (timer_active=%d irq_count=%u seq=%u)\n",
+		 hrtimer_active(&sd->timer), sd->irq_count, sd->latest.seq);
 	return 0;
 }
 
@@ -1293,7 +1335,8 @@ static int sensor_runtime_resume(struct device *dev)
 	WRITE_ONCE(sd->suspended, false);
 	hrtimer_start(&sd->timer, ms_to_ktime(interval), HRTIMER_MODE_REL);
 
-	dev_info(dev, "runtime resume: sampling restarted (interval=%lums)\n", interval);
+	dev_info(dev, "runtime resume: sampling restarted (timer_active=%d interval=%lums)\n",
+		 hrtimer_active(&sd->timer), interval);
 	return 0;
 }
 
@@ -1389,7 +1432,7 @@ static int sensor_probe(struct i2c_client *client)
 	sd->shm = (struct sensor_shm *)sd->shm_addr;
 	sd->shm->magic = SENSOR_SHM_MAGIC;
 	sd->shm->version = SENSOR_SHM_VERSION;
-	spin_lock_init(&sd->shm_lock);
+	mutex_init(&sd->shm_lock);
 	sd->shm_publish_delay_us = shm_publish_delay_us;
 	/*
 	 * 放在赋值之后打印。教训：这条日志最初写在 "ring ready" 那行（赋值之前），
@@ -1422,7 +1465,7 @@ static int sensor_probe(struct i2c_client *client)
 	 * 失败时置 NULL：后续 debugfs_remove_recursive(NULL) 是安全的。
 	 */
 	sd->dbg = debugfs_create_dir(DRV_NAME, NULL);
-	if (IS_ERR(sd->dbg)) {
+	if (IS_ERR_OR_NULL(sd->dbg)) {
 		dev_warn(dev, "debugfs unavailable: %ld\n", PTR_ERR(sd->dbg));
 		sd->dbg = NULL;
 	} else {

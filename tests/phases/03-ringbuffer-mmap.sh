@@ -134,14 +134,20 @@ check_gt "并发确实读到了样本（samples_read）" "$CSAMPLES" 0
 CSNAP=$(tag_val /tmp/conc.txt snapshots 0)
 check_gt "并发下 mmap 快照读取有效（snapshots）" "$CSNAP" 0
 
-# ---- 阶段 03 整改新增：出队全局唯一性（多核下抓真竞态）----
+# ---- 阶段 03 整改新增：出队全局唯一性（冒烟级不变式）----
 # 每个子进程把自己读到的样本 seq 写入共享数组，父进程排序后查重复。
-# 正确实现下一条样本只能被一个读者取走一次 → 重复 seq 就是出队竞态的锛证。
-# 原版子进程解析出 seq 后直接丢弃，于是"同一样本被读两次"完全不可见（验证报告 S2）。
+# 正确实现下一条样本只能被一个读者取走一次。
+#
+# 【证据等级声明（复验结论 N3，必须保留）】
+#   此断言在破坏性负控下**无判别力**：把 read 侧换成无锁 kfifo_out，本项仍为 0
+#   （logs/20260914-134658-03v-03-ringbuffer-mmap.log 的 NC-c）。
+#   原因：TCG 下真并行度受宿主调度限制，出队竞态很容易不出现。
+#   因此它只能表述为"本次运行未观测到重复样本"，**不得**当作"并发原子性证明"，
+#   也不得作为"无竞态"的证据。检查项名字里已经写明这一点。
 CSEQ=$(tag_val /tmp/conc.txt consumed_seqs 0)
 CDUP=$(tag_val /tmp/conc.txt dup_seqs 99)
 check_gt "并发确实消费到了样本序号（consumed_seqs）" "$CSEQ" 0
-check_eq "出队全局无重复（dup_seqs=0，即无"同一样本被读两次"）" "0" "$CDUP"
+check_eq "本次运行未观测到重复样本（dup_seqs=0；冒烟级不变式，非原子性证明）" "0" "$CDUP"
 CSEQMIN=$(tag_val /tmp/conc.txt seq_min 0)
 CSEQMAX=$(tag_val /tmp/conc.txt seq_max 0)
 info "并发消费序号范围：$CSEQMIN ~ ${CSEQMAX}（缺口数=$(tag_val /tmp/conc.txt seq_gaps 0)，缺口来自队满丢弃/EAGAIN，属正常）"
@@ -152,14 +158,22 @@ check_contains "concurrency_test 整体结论为 PASS" /tmp/conc.txt "\[CONC\] O
 info "== 3) seqlock 放大器验证（受控放大写入窗口，让重试路径真的被执行）=="
 # 为什么必须做这一步：正常写入窗口只有 ~1µs，而采样周期是 10ms，
 # 读者撞上"写入中"的概率约 10⁻⁴ —— "seqlock 生效"的正向证据在自然条件下拿不到。
-# 打开驱动的 shm_publish_delay_us 参数把窗口从 ~1µs 放大到 5ms 后：
-#   重试次数 > 0  ：证明协议路径真的被执行（而不是重试逻辑是死代码）
-#   撕裂样本 = 0 ：证明协议真的有效（一致性成立）
-# 这两项配合起来，才能把"假 seqlock"与"真 seqlock"区分开。
+#
+# 受控放大器：用模块参数 shm_publish_delay_us 在"奇数窗口"内插入**睡眠**延时。
+# 【为什么必须是睡眠延时（本次整改的关键）】
+#   初版用 udelay 自旋，写者（RT 优先级的中断线程）在整个窗口内占满一个 CPU，
+#   读者若被调度到同一 CPU 就完全得不到执行机会 → odd_seen 仍为 0。
+#   实测症状：同一代码连跑 3 次有 2 次失败（37/3、40/0、37/3），并触发 RT throttling。
+#   改成 fsleep 后写者在窗口内主动让出 CPU，观测变得确定可复现。
+#
+# 【SKIP 语义】即便窗口已睡眠化，"能否观测到"仍与宿主调度有关。因此：
+#   odd_seen > 0  → 拿到正向证据，按强断言判定（重试>0、无撕裂、退出码 0）；
+#   odd_seen == 0 → 本次没有取得证据，记 [CHECK:SKIP]（**不允许**当 PASS，也不硬失败）。
+#   该项升级为 PASS 的门槛写在 docs/verify 的报告里（连续 N 次都能命中）。
 KVER=$(uname -r)
 AMP_OK=1
 if rmmod sensor_char 2>/tmp/rmmod.txt && \
-   insmod "/lib/modules/$KVER/sensor_char.ko" shm_publish_delay_us=5000 2>/tmp/insmod.txt; then
+   insmod "/lib/modules/$KVER/sensor_char.ko" shm_publish_delay_us=1000 2>/tmp/insmod.txt; then
 	sleep 1
 	/bin/ring_mmap_test quick > /tmp/ring_amp.txt 2>&1
 	RC_AMP=$?
@@ -171,14 +185,22 @@ if rmmod sensor_char 2>/tmp/rmmod.txt && \
 	AMP_MS=$(tag_val /tmp/ring_amp.txt loop_elapsed_ms 0)
 	AMP_READS=$(tag_val /tmp/ring_amp.txt mmap_reads 0)
 	info "放大器模式：iters=$AMP_READS elapsed=${AMP_MS}ms retries=$AMP_RETRIES odd_seen=$AMP_ODD seq_changes=$AMP_CHG invalid=$AMP_INVALID"
+	# 这项在任何情况下都必须成立：它证明读者确实在跟踪写方（seq 在动）。
 	check_gt "读者确实在跟踪写方（shm_seq_changes=$AMP_CHG ≥ 3）" "$AMP_CHG" 2
-	check_gt "读者确实撞上过写入窗口（shm_seq_odd_seen=$AMP_ODD > 0）" "$AMP_ODD" 0
-	check_gt "seqlock 重试路径真的被执行（mmap_retries=$AMP_RETRIES > 0）" "$AMP_RETRIES" 0
-	check_eq "重试后数据始终一致（放大窗口下 mmap_invalid=0）" "0" "$AMP_INVALID"
-	check_true "放大器模式程序退出码为 0" "0" "$RC_AMP"
+	if [ "${AMP_ODD:-0}" -gt 0 ] 2>/dev/null; then
+		check_gt "读者确实撞上过写入窗口（shm_seq_odd_seen=$AMP_ODD > 0）" "$AMP_ODD" 0
+		check_gt "seqlock 重试路径真的被执行（mmap_retries=$AMP_RETRIES > 0）" "$AMP_RETRIES" 0
+		check_eq "重试后数据始终一致（放大窗口下 mmap_invalid=0）" "0" "$AMP_INVALID"
+		check_true "放大器模式程序退出码为 0" "0" "$RC_AMP"
+	else
+		skip "读者确实撞上过写入窗口" "本次运行 odd_seen=0（写窗口未被采样到，宿主调度所限），未取得正向证据"
+		skip "seqlock 重试路径真的被执行" "同上（odd_seen=0 → 重试路径自然为 0 次，不能当作证据）"
+		skip "重试后数据始终一致（放大窗口下 mmap_invalid=0）" "同上（未命中窗口时该项恒为 0，无判别力）"
+		skip "放大器模式程序退出码为 0" "同上（quick 模式要求 retries>0，未命中时程序会返回 1）"
+	fi
 else
 	AMP_OK=0
-	fail "放大器模式重新加载驱动（insmod shm_publish_delay_us=5000）" \
+	fail "放大器模式重新加载驱动（insmod shm_publish_delay_us=1000）" \
 	     "rmmod/insmod 失败：$(cat /tmp/rmmod.txt /tmp/insmod.txt 2>/dev/null | head -2 | tr '\n' ' ')"
 fi
 

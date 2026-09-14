@@ -1,0 +1,8 @@
+# 阶段 05（IIO）的模块加载列表：只加载虚拟 I2C 控制器 + IIO 驱动
+#
+# 为什么不加载 sensor_char.ko：
+#   字符设备驱动绑定的 compatible = "lucien,sensor-char" 对应设备树里的 sensor@48，
+#   本阶段要验证的是 IIO 驱动绑定 sensor@49。虽然 virt_i2c 给两个地址各维护了独立 bank，
+#   但同时加载会让 dmesg 里混入字符设备的日志，干扰"这条链路是否真的通"的判断。
+virt_i2c.ko
+sensor_iio.ko
