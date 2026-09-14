@@ -37,7 +37,9 @@ check_true() {
     fi
 }
 
-# 文件内容包含：check_contains <名称> <文件> <子串>
+# 文件内容包含：check_contains <名称> <文件> <模式>
+#   注意：<模式> 走 grep，是**正则**。想匹配字面量里的 [ ] ( ) . * 等必须转义
+#   （busybox grep 对未闭合的 [ 会直接报 "bad regex" 并判定失败）。
 check_contains() {
     if [ ! -f "$2" ]; then
         fail "$1" "文件不存在: $2"
@@ -116,4 +118,12 @@ check_cmd() {
 # 输出信息（不计入检查项）
 info() {
     echo "      · $1"
+}
+
+# 从 "<键>=<值>" 形式的输出里取某个键的值：tag_val <文件> <键> <默认值>
+# 先按空格拆成 token，因此同一行里的多个键都能取到
+# （例如 [STAT] open=1 interval=20 或 [RING] mmap_reads=100 mmap_retries=3）。
+tag_val() {
+	v=$(tr ' ' '\n' < "$1" 2>/dev/null | sed -n "s/^$2=//p" | tr -d '\r' | head -1)
+	[ -n "$v" ] && echo "$v" || echo "$3"
 }

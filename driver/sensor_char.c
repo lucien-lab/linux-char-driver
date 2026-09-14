@@ -62,6 +62,7 @@
 #include <linux/fs.h>
 #include <linux/cdev.h>
 #include <linux/device.h>
+#include <linux/debugfs.h>		/* 运行统计/寄存器现场观测（阶段 04） */
 #include <linux/slab.h>
 #include <linux/uaccess.h>
 #include <linux/mutex.h>
@@ -122,6 +123,7 @@ struct sensor_dev {
 	struct cdev	cdev;
 	dev_t		devt;
 	struct device	*char_dev;
+	struct dentry	*dbg;		/* /sys/kernel/debug/sensor_char/ */
 
 	/* I2C：从设备由 i2c 核心根据设备树枚举得到，驱动只持有 client */
 	struct i2c_client	*client;
@@ -739,6 +741,36 @@ static ssize_t sensor_write(struct file *file, const char __user *ubuf,
 	return count;
 }
 
+/*
+ * ============================ 采样周期：范围判定与生效动作 ============================
+ *
+ * 为什么要把这两件事抽成共用函数：
+ *   "周期"现在有两个入口——ioctl(SENSOR_IOC_SET_INTERVAL) 与 sysfs 的 interval_ms。
+ *   如果两处各写一份判定，它们迟早会漂移（本项目阶段 04 之前的 ioctl 下限是 10ms，
+ *   而 sysfs 契约要求 1ms）。用户态就会遇到"同一个设置，走 A 接口成功、走 B 接口失败"
+ *   这种最难查的不一致。因此统一为：范围判定一份、生效动作一份，两个入口都调它们。
+ */
+#define SENSOR_INTERVAL_MIN_MS	1UL
+#define SENSOR_INTERVAL_MAX_MS	60000UL
+
+static bool sensor_interval_valid(unsigned long ms)
+{
+	return ms >= SENSOR_INTERVAL_MIN_MS && ms <= SENSOR_INTERVAL_MAX_MS;
+}
+
+/* 让新周期立即生效：取消后按新周期重启定时器（hrtimer_cancel 会等回调结束） */
+static void sensor_apply_interval(struct sensor_dev *sd, unsigned long ms)
+{
+	mutex_lock(&sd->lock);
+	sd->interval_ms = ms;
+	mutex_unlock(&sd->lock);
+
+	hrtimer_cancel(&sd->timer);
+	hrtimer_start(&sd->timer, ms_to_ktime(ms), HRTIMER_MODE_REL);
+	dev_info(&sd->client->dev, "interval -> %lu ms\n", ms);
+}
+
+
 static long sensor_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
 	struct sensor_dev *sd = file->private_data;
@@ -761,18 +793,13 @@ static long sensor_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 	case SENSOR_IOC_SET_INTERVAL:
 		if (copy_from_user(&interval, (void __user *)arg, sizeof(interval)))
 			return -EFAULT;
-		if (interval < 10 || interval > 60000)
-			return -EINVAL;
-		mutex_lock(&sd->lock);
-		sd->interval_ms = interval;
-		mutex_unlock(&sd->lock);
 		/*
-		 * 让新周期立即生效：取消后按新周期重启定时器。
-		 * hrtimer_cancel 会等待回调结束，避免与回调并发。
+		 * 范围判定与 sysfs 的 interval_ms 共用同一个函数，
+		 * 两个入口不会再有“一边能写、一边报 EINVAL”的不一致。
 		 */
-		hrtimer_cancel(&sd->timer);
-		hrtimer_start(&sd->timer, ms_to_ktime(interval), HRTIMER_MODE_REL);
-		dev_info(&sd->client->dev, "interval -> %u ms\n", interval);
+		if (!sensor_interval_valid(interval))
+			return -EINVAL;
+		sensor_apply_interval(sd, interval);
 		break;
 
 	case SENSOR_IOC_GET_STATS:
@@ -887,6 +914,217 @@ err_unregister:
 	unregister_chrdev_region(sd->devt, 1);
 	return ret;
 }
+
+/* ============================ sysfs：设备参数 ============================ */
+/*
+ * 为什么放 sysfs、为什么挂在这里：
+ *   sysfs 的约定是「一个文件一个值（one value per file）」，而且它是**稳定 ABI**：
+ *   一旦发布，语义就不能随版本改动㈠以这里只放「设备参数/状态」这类稳定的单值属性，
+ *   统计快照那种「一大串字段」的东西放 debugfs（见下一节）。
+ *
+ *   属性挂在字符设备类设备上（sd->char_dev，即 /dev/sensor0 对应的
+ *   /sys/class/sensor_char/sensor0/），而不是 i2c client 设备上：
+ *   用户面对的是「这个传感器字符设备」，路径与 /dev/sensor0 一一对应，最直观。
+ *
+ *   dev_get_drvdata(dev) 能拿到 sd：device_create() 的第 4 个参数就是 drvdata。
+ */
+
+static ssize_t interval_ms_show(struct device *dev, struct device_attribute *attr,
+				char *buf)
+{
+	struct sensor_dev *sd = dev_get_drvdata(dev);
+	unsigned long ms;
+
+	mutex_lock(&sd->lock);
+	ms = sd->interval_ms;
+	mutex_unlock(&sd->lock);
+
+	return sysfs_emit(buf, "%lu\n", ms);
+}
+
+static ssize_t interval_ms_store(struct device *dev, struct device_attribute *attr,
+				 const char *buf, size_t count)
+{
+	struct sensor_dev *sd = dev_get_drvdata(dev);
+	unsigned long ms;
+	int ret;
+
+	/*
+	 * 用 kstrtoul 而不是 simple_strtoul：前者会报错、能拒绍非法输入
+	 * （负数、字母、尾随垃圾），后者默默返回 0，会把「解析失败」当成「用户写了0」。
+	 */
+	ret = kstrtoul(buf, 0, &ms);
+	if (ret)
+		return ret;
+	if (!sensor_interval_valid(ms))
+		return -EINVAL;
+
+	sensor_apply_interval(sd, ms);
+	return count;
+}
+static DEVICE_ATTR_RW(interval_ms);
+
+/* 当前最新样本序号（只读），与 ioctl(GET_STATS) 看到的是同一份数据 */
+static ssize_t seq_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	struct sensor_dev *sd = dev_get_drvdata(dev);
+
+	return sysfs_emit(buf, "%u\n", READ_ONCE(sd->latest.seq));
+}
+static DEVICE_ATTR_RO(seq);
+
+/* 累计 I2C 传输失败次数：故障注入后看它是否增长，是验证错误处理路径的入口 */
+static ssize_t i2c_errors_show(struct device *dev, struct device_attribute *attr,
+			       char *buf)
+{
+	struct sensor_dev *sd = dev_get_drvdata(dev);
+
+	return sysfs_emit(buf, "%u\n", READ_ONCE(sd->i2c_errors));
+}
+static DEVICE_ATTR_RO(i2c_errors);
+
+/*
+ * 环形缓冲容量（样本数）。为什么要专门暴露：kfifo_alloc 会把字节容量
+ * 向上取整到 2 的幂，所以「请求 64 个」实际得到的是 85 个（1536B → 2048B）。
+ * 用户态要计算满没满、该读多少，必须知道真实容量而不是请求值。
+ */
+static ssize_t ring_capacity_show(struct device *dev, struct device_attribute *attr,
+				  char *buf)
+{
+	struct sensor_dev *sd = dev_get_drvdata(dev);
+
+	return sysfs_emit(buf, "%u\n", sensor_ring_capacity(sd));
+}
+static DEVICE_ATTR_RO(ring_capacity);
+
+static struct attribute *sensor_attrs[] = {
+	&dev_attr_interval_ms.attr,
+	&dev_attr_seq.attr,
+	&dev_attr_i2c_errors.attr,
+	&dev_attr_ring_capacity.attr,
+	NULL,
+};
+
+static const struct attribute_group sensor_attr_group = {
+	.attrs = sensor_attrs,
+};
+
+/* ============================ debugfs：运行统计与现场观测 ============================ */
+/*
+ * debugfs 与 sysfs 的分工（面试常问）：
+ *   sysfs   = 稳定 ABI，只放设备参数/状态单值属性；
+ *   debugfs = 内核明确声明「不是稳定 ABI、不保证向后兼容」，适合放统计、
+ *             寄存器快照、内部状态转储。把这些塞进 sysfs 会把 sysfs 变成 dump 接口
+ *             （违反 one-value-per-file），而且一旦发布就得永久兼容。
+ *
+ * 三个文件都是「每次 read 现场生成文本」（不缓存），所以读到的永远是当前值。
+ * 内容都很短（远小于一页），所以直接用 simple_read_from_buffer 拷贝即可，
+ * 不需要上 seq_file（那种场景是内容超过 4KB、需要分页输出）。
+ */
+
+static ssize_t sensor_dbg_stats_read(struct file *file, char __user *ubuf,
+				     size_t count, loff_t *ppos)
+{
+	struct sensor_dev *sd = file->private_data;
+	char kbuf[320];
+	int len;
+
+	mutex_lock(&sd->lock);
+	len = scnprintf(kbuf, sizeof(kbuf),
+			"open=%u read=%u irq=%u i2c_err=%u interval=%lu dropped=%u ring_count=%u ring_capacity=%u seq=%u shm_writes=%u\n",
+			sd->open_count, sd->read_count, sd->irq_count, sd->i2c_errors,
+			sd->interval_ms, sd->kfifo_dropped, sensor_ring_count(sd),
+			sensor_ring_capacity(sd), READ_ONCE(sd->latest.seq),
+			sd->shm_writes);
+	mutex_unlock(&sd->lock);
+
+	return simple_read_from_buffer(ubuf, count, ppos, kbuf, len);
+}
+
+/*
+ * ring：环形缓冲状态 + 最近 8 条样本。
+ * 样本从 mmap 共享区里取（而不是去动 kfifo 的读写索引）——读共享区不会
+ * 干扰 read() 的消费进度。取的时候短暂持有 shm_lock、拷到本地数组，
+ * 之后在锁外格式化，避免在持锁期间做 scnprintf/拷贝到用户空间。
+ */
+static ssize_t sensor_dbg_ring_read(struct file *file, char __user *ubuf,
+				    size_t count, loff_t *ppos)
+{
+	struct sensor_dev *sd = file->private_data;
+	struct sensor_sample snap[8];
+	unsigned int n = 0, total = 0, i, start, widx;
+	char kbuf[640];
+	int len = 0;
+
+	spin_lock(&sd->shm_lock);
+	total = sd->shm->count;
+	widx = sd->shm->write_idx;
+	n = total > ARRAY_SIZE(snap) ? ARRAY_SIZE(snap) : total;
+	start = (widx + SENSOR_SHM_SAMPLES - n) % SENSOR_SHM_SAMPLES;
+	for (i = 0; i < n; i++)
+		snap[i] = sd->shm->samples[(start + i) % SENSOR_SHM_SAMPLES];
+	spin_unlock(&sd->shm_lock);
+
+	len += scnprintf(kbuf + len, sizeof(kbuf) - len,
+			 "count=%u dropped=%u ring_count=%u ring_capacity=%u shm_writes=%u recent=%u\n",
+			 total, sd->kfifo_dropped, sensor_ring_count(sd),
+			 sensor_ring_capacity(sd), sd->shm_writes, n);
+	for (i = 0; i < n; i++)
+		len += scnprintf(kbuf + len, sizeof(kbuf) - len,
+				 "sample[%u] seq=%u temp_milli=%d\n",
+				 i, snap[i].seq, snap[i].temp_milli);
+
+	return simple_read_from_buffer(ubuf, count, ppos, kbuf, len);
+}
+
+/*
+ * regs：用 regmap 现场读一次寄存器 0x00~0x02。
+ * 意义不只是「看一眼寄存器」：它跑的是与中断线程采集样本**完全相同**的
+ * 寄存器访问路径（regmap → i2c core → 总线 smbus_xfer），
+ * 所以它是「regmap 通路是活的」最直接的证据。
+ * 读失败要如实展示错误码，不能显示一个假值（否则看的人会以为总线正常）。
+ */
+static ssize_t sensor_dbg_regs_read(struct file *file, char __user *ubuf,
+				    size_t count, loff_t *ppos)
+{
+	struct sensor_dev *sd = file->private_data;
+	char kbuf[256];
+	unsigned int reg, val;
+	int len = 0, ret;
+
+	for (reg = SENSOR_REG_TEMP; reg <= SENSOR_REG_CONFIG; reg++) {
+		ret = regmap_read(sd->regmap, reg, &val);
+		if (ret)
+			len += scnprintf(kbuf + len, sizeof(kbuf) - len,
+					 "%02x: <read error %d>\n", reg, ret);
+		else
+			len += scnprintf(kbuf + len, sizeof(kbuf) - len,
+					 "%02x: %04x\n", reg, val);
+	}
+
+	return simple_read_from_buffer(ubuf, count, ppos, kbuf, len);
+}
+
+static const struct file_operations sensor_dbg_stats_fops = {
+	.owner	= THIS_MODULE,
+	.open	= simple_open,
+	.read	= sensor_dbg_stats_read,
+	.llseek	= default_llseek,
+};
+
+static const struct file_operations sensor_dbg_ring_fops = {
+	.owner	= THIS_MODULE,
+	.open	= simple_open,
+	.read	= sensor_dbg_ring_read,
+	.llseek	= default_llseek,
+};
+
+static const struct file_operations sensor_dbg_regs_fops = {
+	.owner	= THIS_MODULE,
+	.open	= simple_open,
+	.read	= sensor_dbg_regs_read,
+	.llseek	= default_llseek,
+};
 
 /* ============================ i2c_driver probe ============================ */
 /*
@@ -1029,12 +1267,40 @@ static int sensor_probe(struct i2c_client *client)
 		goto err_free_shm;
 	}
 
-	/* 5. 中断：实验环境自建虚拟中断源，真机换成传感器 ALERT 引脚对应的 IRQ */
+	/*
+	 * 5. sysfs（设备参数）+ debugfs（运行统计）
+	 *    sysfs 挂在字符设备类设备上 -> /sys/class/sensor_char/sensor0/
+	 *    两个系统分别对应两种可见性：稳定 ABI（sysfs）与调试通道（debugfs）。
+	 */
+	ret = sysfs_create_group(&sd->char_dev->kobj, &sensor_attr_group);
+	if (ret) {
+		dev_err(dev, "sysfs_create_group failed: %d\n", ret);
+		goto err_unreg_chrdev;
+	}
+
+	/*
+	 * debugfs 创建失败不当作致命错误：它只在 CONFIG_DEBUG_FS 且实际挂载了
+	 * debugfs 时才可用（生产内核常常不挂），属于可选调试通道。
+	 * 失败时置 NULL：后续 debugfs_remove_recursive(NULL) 是安全的。
+	 */
+	sd->dbg = debugfs_create_dir(DRV_NAME, NULL);
+	if (IS_ERR(sd->dbg)) {
+		dev_warn(dev, "debugfs unavailable: %ld\n", PTR_ERR(sd->dbg));
+		sd->dbg = NULL;
+	} else {
+		debugfs_create_file("stats", 0444, sd->dbg, sd, &sensor_dbg_stats_fops);
+		debugfs_create_file("ring", 0444, sd->dbg, sd, &sensor_dbg_ring_fops);
+		debugfs_create_file("regs", 0444, sd->dbg, sd, &sensor_dbg_regs_fops);
+	}
+	dev_info(dev, "user interfaces ready: sysfs=/sys/class/%s/sensor%d, debugfs=%s\n",
+		 DRV_NAME, MINOR(sd->devt), sd->dbg ? "/sys/kernel/debug/" DRV_NAME : "unavailable");
+
+	/* 6. 中断：实验环境自建虚拟中断源，真机换成传感器 ALERT 引脚对应的 IRQ */
 	sd->irq_domain = irq_domain_create_linear(NULL, 1,
 						   &sensor_irq_domain_ops, NULL);
 	if (IS_ERR(sd->irq_domain)) {
 		ret = PTR_ERR(sd->irq_domain);
-		goto err_unreg_chrdev;
+		goto err_remove_sysfs;
 	}
 	sd->virq = irq_create_mapping(sd->irq_domain, 0);
 	if (!sd->virq) {
@@ -1055,7 +1321,7 @@ static int sensor_probe(struct i2c_client *client)
 	}
 	dev_info(dev, "irq registered: virq=%d\n", sd->virq);
 
-	/* 6. 启动采样定时器（真机上这一步由传感器的 DRDY/ALERT 中断替代） */
+	/* 7. 启动采样定时器（真机上这一步由传感器的 DRDY/ALERT 中断替代） */
 	hrtimer_init(&sd->timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
 	sd->timer.function = sensor_timer_fn;
 	hrtimer_start(&sd->timer, ms_to_ktime(sd->interval_ms), HRTIMER_MODE_REL);
@@ -1066,6 +1332,10 @@ static int sensor_probe(struct i2c_client *client)
 
 err_remove_domain:
 	irq_domain_remove(sd->irq_domain);
+err_remove_sysfs:
+	/* 先摘掉用户可见接口，再往下走销毁 kobject/字符设备 */
+	debugfs_remove_recursive(sd->dbg);
+	sysfs_remove_group(&sd->char_dev->kobj, &sensor_attr_group);
 err_unreg_chrdev:
 	device_destroy(sensor_class, sd->devt);
 	cdev_del(&sd->cdev);
@@ -1092,6 +1362,13 @@ static void sensor_remove(struct i2c_client *client)
 	hrtimer_cancel(&sd->timer);		/* 停掉采样源 */
 	free_irq(sd->virq, sd);
 	irq_domain_remove(sd->irq_domain);
+	/*
+	 * 摘掉用户可见接口：必须在 device_destroy() 之前。
+	 * sysfs 属性挂在那颗 kobject 上，先销毁 kobject 会留下“属性回调里的
+	 * sd 指针已被释放”的窗口；debugfs 传 NULL 是安全的（不可用时 sd->dbg 就是 NULL）。
+	 */
+	debugfs_remove_recursive(sd->dbg);
+	sysfs_remove_group(&sd->char_dev->kobj, &sensor_attr_group);
 	device_destroy(sensor_class, sd->devt);
 	cdev_del(&sd->cdev);
 	unregister_chrdev_region(sd->devt, 1);
