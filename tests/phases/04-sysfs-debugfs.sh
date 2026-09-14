@@ -35,6 +35,22 @@ info "读到的值：interval_ms=$IV seq=$SEQ i2c_errors=$IE ring_capacity=$RC"
 check_true "interval_ms 是数字（${IV}）"  "$(echo "$IV" | grep -cE '^[0-9]+$')" "1"
 check_true "seq 是数字（${SEQ}）"          "$(echo "$SEQ" | grep -cE '^[0-9]+$')" "1"
 check_true "i2c_errors 是数字（${IE}）"    "$(echo "$IE" | grep -cE '^[0-9]+$')" "1"
+# 权限位：契约要求 interval_ms 可写、其余三个只读。用 ls -l 的权限串断言。
+MODE_RW=$(ls -l $SYS/interval_ms 2>/dev/null | cut -c1-10)
+MODE_SEQ=$(ls -l $SYS/seq 2>/dev/null | cut -c1-10)
+MODE_IE=$(ls -l $SYS/i2c_errors 2>/dev/null | cut -c1-10)
+MODE_RC=$(ls -l $SYS/ring_capacity 2>/dev/null | cut -c1-10)
+info "权限位：interval_ms=$MODE_RW seq=$MODE_SEQ i2c_errors=$MODE_IE ring_capacity=$MODE_RC"
+check_eq "interval_ms 可写（-rw-r--r--）" "-rw-r--r--" "$MODE_RW"
+check_eq "seq 只读（-r--r--r--）" "-r--r--r--" "$MODE_SEQ"
+check_eq "i2c_errors 只读（-r--r--r--）" "-r--r--r--" "$MODE_IE"
+check_eq "ring_capacity 只读（-r--r--r--）" "-r--r--r--" "$MODE_RC"
+# 向只读属性写入必须失败（否则"只读"只是名义上的）
+if echo 1 > $SYS/seq 2>/dev/null; then
+	fail "向只读属性 seq 写入被拒绝" "写入成功了（权限或 store 实现有问题）"
+else
+	pass "向只读属性 seq 写入被拒绝"
+fi
 check_true "ring_capacity 是数字（${RC}）" "$(echo "$RC" | grep -cE '^[0-9]+$')" "1"
 # 与阶段 03 对齐：容量必须是 kfifo 向上取整后的真实值（85），不能是请求值 64
 check_eq "ring_capacity 为真实容量 85（非请求值 64）" "85" "$RC"
