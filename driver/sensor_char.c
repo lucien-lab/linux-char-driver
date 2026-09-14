@@ -71,6 +71,10 @@
 #define SENSOR_REG_TEMP		0x00	/* 温度寄存器（只读；真机 SHT30 为 0x0000 命令字） */
 #define SENSOR_REG_HUMIDITY	0x01	/* 湿度寄存器（只读，本项目保留给 IIO 阶段使用） */
 #define SENSOR_REG_CONFIG	0x02	/* 配置寄存器（读写；probe 时用它探测芯片是否存在） */
+/* CONFIG 寄存器 bit0：连续转换使能（1=使能，0=关闭）。
+ * 这个语义必须与 virt_i2c.c 文件头的寄存器图、以及 probe 里的日志保持一致，
+ * 否则会出现"日志说 enable 却写了关闭值"这种误导性证据。 */
+#define SENSOR_CFG_CONT_EN	0x0001
 
 /* 阻塞 read() 等待新样本的最长时间：超时返回 -ETIMEDOUT，避免用户态永久卡死 */
 #define SENSOR_READ_TIMEOUT_MS	2000
@@ -419,18 +423,25 @@ static ssize_t sensor_write(struct file *file, const char __user *ubuf,
 		return -EFAULT;
 
 	if (kbuf[0] == 0x01) {
+		unsigned long flags;
+
 		/*
 		 * 在进程上下文模拟一次硬件中断。
 		 * 关键点：真实中断发生CPU会自动关中断，而 write() 系统调用里
 		 * 中断是打开的，直接调用 generic_handle_domain_irq() 会让中断
 		 * 处理流程看到错误的状态，内核会报：
 		 *   "irq 21 handler sensor_irq_hard enabled interrupts"
-		 * 所以这里用 local_irq_disable/enable 模拟中断上下文。
+		 * 所以这里先关中断来模拟中断上下文。
 		 * （hrtimer 回调里调用不需要，因为 softirq 上下文本来就关中断）
+		 *
+		 * 为什么用 local_irq_save/restore 而不是 local_irq_disable/enable：
+		 * enable 是**无条件开中断**，会把调用者原本可能已经屏蔽的中断状态冲掉。
+		 * 虽然当前调用链（VFS write）里中断本是开的，但驱动不应依赖调用者的
+		 * 上下文假设；save/restore 是内核里保存-恢复中断状态的规范写法。
 		 */
-		local_irq_disable();
+		local_irq_save(flags);
 		generic_handle_domain_irq(sd->irq_domain, 0);
-		local_irq_enable();
+		local_irq_restore(flags);
 		dev_info(&sd->client->dev, "manual trigger\n");
 	}
 	return count;
@@ -614,7 +625,7 @@ static int sensor_probe(struct i2c_client *client)
 	if (IS_ERR(sd->regmap)) {
 		ret = PTR_ERR(sd->regmap);
 		dev_err(dev, "regmap init failed: %d\n", ret);
-		return ret;
+		goto err_clear_clientdata;
 	}
 
 	/*
@@ -625,16 +636,28 @@ static int sensor_probe(struct i2c_client *client)
 	ret = regmap_read(sd->regmap, SENSOR_REG_CONFIG, &cfg);
 	if (ret) {
 		dev_err(dev, "chip not responding (regmap_read=%d)\n", ret);
-		return ret;
+		goto err_clear_clientdata;
 	}
-	dev_info(dev, "chip detected: config=0x%04x -> enable continuous conversion\n", cfg);
-	regmap_write(sd->regmap, SENSOR_REG_CONFIG, 0x0000);
+	dev_info(dev, "chip detected: config=0x%04x (continuous conversion %s)\n",
+		 cfg, (cfg & SENSOR_CFG_CONT_EN) ? "already enabled" : "off");
+
+	/*
+	 * 配置成连续转换模式（bit0=1）。
+	 * 写操作的返回值必须检查：配置失败说明总线/芯片有问题，此时继续注册字符设备
+	 * 只会让用户态拿到一堆读失败，不如直接在 probe 里失败。
+	 */
+	ret = regmap_write(sd->regmap, SENSOR_REG_CONFIG, SENSOR_CFG_CONT_EN);
+	if (ret) {
+		dev_err(dev, "failed to enable continuous conversion: %d\n", ret);
+		goto err_clear_clientdata;
+	}
+	dev_info(dev, "continuous conversion enabled (config=0x%04x)\n", SENSOR_CFG_CONT_EN);
 
 	/* 4. 注册字符设备 -> /dev/sensor0 */
 	ret = sensor_chrdev_register(sd);
 	if (ret) {
 		dev_err(dev, "chrdev register failed: %d\n", ret);
-		return ret;
+		goto err_clear_clientdata;
 	}
 
 	/* 5. 中断：实验环境自建虚拟中断源，真机换成传感器 ALERT 引脚对应的 IRQ */
@@ -678,6 +701,14 @@ err_unreg_chrdev:
 	device_destroy(sensor_class, sd->devt);
 	cdev_del(&sd->cdev);
 	unregister_chrdev_region(sd->devt, 1);
+err_clear_clientdata:
+	/*
+	 * probe 失败时清掉 client 的 drvdata。
+	 * 不清的话 client 会带着一个指向即将被 devm 释放的内存的指针继续存在于
+	 * i2c 总线上；虽然当前没有代码路径会再取用它，但这属于"悬空指针留在
+	 * 系统里"，是 review 一眼就会被打回的惯用法问题。
+	 */
+	i2c_set_clientdata(client, NULL);
 	return ret;
 }
 

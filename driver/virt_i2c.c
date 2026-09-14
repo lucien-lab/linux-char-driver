@@ -27,7 +27,9 @@
  *
  *   0x00  TEMP      只读，16 位；数值 = 毫摄氏度 * 16 / 1000（LSB = 1/16 ℃）
  *   0x01  HUMIDITY  只读，16 位；数值 = %RH * 100（LSB = 0.01 %RH）
- *   0x02  CONFIG    读写，16 位；bit0=连续转换使能（模拟值，行为上只做记录）
+ *   0x02  CONFIG    读写，16 位；**bit0 = 连续转换使能：1=使能，0=关闭**
+ *                   （模拟值，行为上只做记录；语义必须三处一致：本注释、
+ *                    probe 里的上电默认值、上层驱动 sensor_char.c 的日志/写入值）
  *
  * 注：真实 TMP105 把 12 位温度放在寄存器高 12 位（低 4 位是状态位）。
  * 这里为了与项目既有代码/文档保持一致，采用"低 12 位有效"的简化约定，
@@ -212,11 +214,18 @@ static s32 virt_i2c_smbus_xfer(struct i2c_adapter *adap, u16 addr,
 static u32 virt_i2c_functionality(struct i2c_adapter *adap)
 {
 	/*
-	 * 只声明确实实现的能力。声明 I2C_FUNC_I2C 会让 regmap 走 raw i2c_transfer
-	 * 路径；声明 I2C_FUNC_SMBUS_* 让 regmap 走 SMBus 路径，与 smbus_xfer 对应。
+	 * 只声明确实实现的能力（声明的每一位都会让 i2c 核心认为可以直接调用，
+	 * 声明了却不实现属于 over-claim，上层会拿到一个莫名其妙的 -EOPNOTSUPP）。
+	 *
+	 * 为什么不含 I2C_FUNC_SMBUS_BYTE：本芯片是"寄存器型"器件，所有访问都带寄存器
+	 * 地址（即命令字节），而无命令字节的 SMBus Byte 协议（size=I2C_SMBUS_BYTE）
+	 * 在 smbus_xfer 里没有对应分支（走 default 返回 -EOPNOTSUPP）。
+	 * 与其声明一个不实现的能力位，不如不声明。
+	 *
+	 * 声明 I2C_FUNC_I2C 会让 regmap 改走 raw i2c_transfer 路径（需要 master_xfer
+	 * 自己编寄存器地址），与本实现不匹配，所以也不能声明。
 	 */
-	return I2C_FUNC_SMBUS_BYTE_DATA | I2C_FUNC_SMBUS_WORD_DATA |
-	       I2C_FUNC_SMBUS_BYTE;
+	return I2C_FUNC_SMBUS_BYTE_DATA | I2C_FUNC_SMBUS_WORD_DATA;
 }
 
 static const struct i2c_algorithm virt_i2c_algo = {
@@ -226,36 +235,51 @@ static const struct i2c_algorithm virt_i2c_algo = {
 
 /* ============================ debugfs 接口 ============================ */
 
+/*
+ * 统计缓冲区大小。
+ *
+ * 为什么用"剩余空间"（rem）而不是固定 768 写死：如果 off 超过缓冲区，
+ * size_t 的 (768 - off) 会下溢成一个巨大的值，scnprintf 就会越界写内存。
+ * 用 rem 递减 + scnprintf 的截断语义（返回值 <= rem-1）可以保证永不下溢。
+ */
+#define VIRT_I2C_STATS_BUF	1024
+
 static ssize_t virt_i2c_stats_read(struct file *filp, char __user *ubuf,
 				   size_t len, loff_t *ppos)
 {
 	struct virt_i2c *chip = filp->private_data;
 	char *buf;
-	int n = 0, i;
+	int n, i;
+	size_t off = 0, rem = VIRT_I2C_STATS_BUF;
 	ssize_t ret;
 
-	buf = kzalloc(768, GFP_KERNEL);
+	buf = kzalloc(VIRT_I2C_STATS_BUF, GFP_KERNEL);
 	if (!buf)
 		return -ENOMEM;
 
 	mutex_lock(&chip->lock);
-	n += scnprintf(buf + n, 768 - n,
-		       "transfers=%u errors=%u injected_left=%u ro_writes=%u\n",
-		       chip->transfers, chip->errors, chip->injected_left,
-		       chip->ro_writes);
-	for (i = 0; i < VBANK_MAX; i++) {
+	n = scnprintf(buf + off, rem,
+		      "transfers=%u errors=%u injected_left=%u ro_writes=%u\n",
+		      chip->transfers, chip->errors, chip->injected_left,
+		      chip->ro_writes);
+	off += n;
+	rem -= (size_t)n;
+
+	for (i = 0; i < VBANK_MAX && rem; i++) {
 		struct virt_i2c_bank *b = &chip->banks[i];
 
 		if (!b->present)
 			continue;
-		n += scnprintf(buf + n, 768 - n,
-			       "bank=0x%02x samples=%u temp_raw=0x%04x humidity_raw=%u config=0x%04x\n",
-			       VBANK_BASE_ADDR + i, b->samples, b->regs[VREG_TEMP],
-			       b->regs[VREG_HUMIDITY], b->regs[VREG_CONFIG]);
+		n = scnprintf(buf + off, rem,
+			      "bank=0x%02x samples=%u temp_raw=0x%04x humidity_raw=%u config=0x%04x\n",
+			      VBANK_BASE_ADDR + i, b->samples, b->regs[VREG_TEMP],
+			      b->regs[VREG_HUMIDITY], b->regs[VREG_CONFIG]);
+		off += n;
+		rem -= (size_t)n;
 	}
 	mutex_unlock(&chip->lock);
 
-	ret = simple_read_from_buffer(ubuf, len, ppos, buf, n);
+	ret = simple_read_from_buffer(ubuf, len, ppos, buf, off);
 	kfree(buf);
 	return ret;
 }
@@ -317,7 +341,8 @@ static int virt_i2c_probe(struct platform_device *pdev)
 	mutex_init(&chip->lock);
 	for (i = 0; i < VBANK_MAX; i++) {
 		chip->banks[i].present = true;
-		chip->banks[i].regs[VREG_CONFIG] = 0x0001;	/* 上电默认：连续转换关 */
+		/* 上电默认：连续转换使能（bit0=1，见文件头寄存器图中的 CONFIG 定义） */
+		chip->banks[i].regs[VREG_CONFIG] = 0x0001;
 	}
 	platform_set_drvdata(pdev, chip);
 
@@ -348,8 +373,15 @@ static int virt_i2c_probe(struct platform_device *pdev)
 		debugfs_create_file("inject_error", 0200, chip->dbg, chip, &virt_i2c_inject_fops);
 	}
 
-	dev_info(&pdev->dev, "registered i2c adapter i2c-%d, of_node=%pOF (sub-devices enumerated from DT)\n",
-		 chip->adap.nr, pdev->dev.of_node);
+	/*
+	 * 打印时用 chip->adap.dev.of_node（而不是 pdev->dev.of_node）：
+	 * 前者才是 i2c 核心实际用来枚举子节点的那个字段，也是测试脚本真正要
+	 * 断言的对象。用后者会打印出非空节点名，导致"删掉上面那行赋值"这种
+	 * 真实故障在日志上完全看不出来（测试会假绿）。
+	 * %pOF 对 NULL 节点打印 "<no-node>"，因此这行日志能直接区分设没设成功。
+	 */
+	dev_info(&pdev->dev, "registered i2c adapter i2c-%d, adapter.of_node=%pOF (sub-devices enumerated from DT)\n",
+		 chip->adap.nr, chip->adap.dev.of_node);
 	return 0;
 }
 

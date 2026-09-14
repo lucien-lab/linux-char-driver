@@ -85,21 +85,10 @@ done
 ln -sf busybox "$ROOTFS/bin/[" 2>/dev/null
 ln -sf busybox "$ROOTFS/bin/[[" 2>/dev/null
 
-# 内核模块：i2c-stub 来自内核树，其余来自 driver/
-cp "$KSRC/drivers/i2c/i2c-stub.ko" "$ROOTFS/lib/modules/$KVER/" 2>/dev/null
-cp "$LAB"/driver/*.ko "$ROOTFS/lib/modules/$KVER/"
-# 第三方依赖模块（如果内核把它编成 =m，需要一起带上）
-for dep in regmap-i2c industrialio industrialio-triggered-buffer kfifo-buf iio-trig-hrtimer; do
-    for p in "$KSRC/drivers/base/regmap/$dep.ko" "$KSRC/drivers/iio/$dep.ko" \
-             "$KSRC/drivers/iio/buffer/$dep.ko" "$KSRC/drivers/iio/trigger/$dep.ko" \
-             "$KSRC/lib/$dep.ko"; do
-        [ -f "$p" ] && cp "$p" "$ROOTFS/lib/modules/$KVER/" 2>/dev/null
-    done
-done
-
 # 模块加载顺序（项目内 driver/modules.load 定义，便于版本管理）
 # 阶段可以覆盖：tests/phases/<阶段名>.modules 存在时优先使用（例如 IIO 阶段
 # 只需要 virt_i2c + sensor_iio，不能同时加载占用同一 i2c 从设备的字符设备驱动）
+# 注意：先把清单算出来再拷模块，才能只打包真正被引用的内核树模块（如 i2c-stub）。
 MODSRC="$LAB/driver/modules.load"
 [ -f "$LAB/tests/phases/$TEST.modules" ] && MODSRC="$LAB/tests/phases/$TEST.modules"
 if [ -f "$MODSRC" ]; then
@@ -109,6 +98,22 @@ else
     for ko in "$LAB"/driver/*.ko; do echo "$(basename "$ko")" >> "$ROOTFS/etc/modules.load"; done
 fi
 echo "  /etc/modules.load (来源: $(basename "$MODSRC")):"; sed 's/^/    /' "$ROOTFS/etc/modules.load"
+
+# 内核模块：驱动自己编译的产物
+cp "$LAB"/driver/*.ko "$ROOTFS/lib/modules/$KVER/"
+# 内核树里的模块：只在模块清单确实引用时才打包。
+# 阶段 02 之后已经不需要 i2c-stub（virt_i2c 提供带设备树节点的适配器），
+# 无条件的把桩模块打进 initramfs 只会让产物里多一个用不到的东西。
+if grep -q '^i2c-stub\.ko' "$ROOTFS/etc/modules.load"; then
+    cp "$KSRC/drivers/i2c/i2c-stub.ko" "$ROOTFS/lib/modules/$KVER/" 2>/dev/null
+fi
+for dep in regmap-i2c industrialio industrialio-triggered-buffer kfifo-buf iio-trig-hrtimer; do
+    for p in "$KSRC/drivers/base/regmap/$dep.ko" "$KSRC/drivers/iio/$dep.ko" \
+             "$KSRC/drivers/iio/buffer/$dep.ko" "$KSRC/drivers/iio/trigger/$dep.ko" \
+             "$KSRC/lib/$dep.ko"; do
+        [ -f "$p" ] && cp "$p" "$ROOTFS/lib/modules/$KVER/" 2>/dev/null
+    done
+done
 
 # 用户态程序
 cp "$LAB"/bin/* "$ROOTFS/bin/" 2>/dev/null
