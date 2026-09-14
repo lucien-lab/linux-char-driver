@@ -54,7 +54,7 @@ if [ -d "$TR" ]; then
     sleep 2
     echo 0 > $TR/tracing_on
     N=$(grep -c sensor_irq_thread $TR/trace 2>/dev/null)
-    check_gt "ftrace 抓到 sensor_irq_thread（次数 $N）" "${N:-0}" 0
+    check_gt "ftrace 抓到 sensor_irq_thread（次数 ${N}）" "${N:-0}" 0
     echo nop > $TR/current_tracer
 else
     fail "debugfs/tracing 可用" "$TR 不存在"

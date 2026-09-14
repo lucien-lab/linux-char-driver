@@ -25,7 +25,7 @@ IMAGE="$PROJ/artifacts/Image"
 DTB="$PROJ/artifacts/virt-sensor.dtb"
 INITRD="$PROJ/artifacts/initramfs.cpio.gz"
 for f in "$IMAGE" "$DTB" "$INITRD"; do
-    [ -f "$f" ] || { echo "缺少产物: $f（先跑 13-vm-fast-cycle.sh + 21-macos-sync-artifacts.sh）"; exit 2; }
+    [ -f "$f" ] || { echo "缺少产物: ${f}（先跑 13-vm-fast-cycle.sh + 21-macos-sync-artifacts.sh）"; exit 2; }
 done
 
 mkdir -p "$PROJ/logs"

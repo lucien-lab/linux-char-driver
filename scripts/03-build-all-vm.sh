@@ -26,7 +26,7 @@ if [ ! -d "$KSRC" ]; then
     echo "  从只读挂载拷贝内核源码（约 2GB，40 秒左右）..."
     cp -a "$KSRC_HOST" "$HOME/kernel-build/"
 else
-    echo "  已存在：$KSRC（如需重新开始请先删除）"
+    echo "  已存在：${KSRC}（如需重新开始请先删除）"
 fi
 
 echo "==================== [2/5] 配置并编译内核 ===================="

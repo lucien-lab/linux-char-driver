@@ -52,10 +52,10 @@ IRQ=$(tag_val /tmp/ring.txt irq_count 0)
 DELTA=$(tag_val /tmp/ring.txt conservation_delta 99)
 check_gt "环形缓冲实际容量可见（ring_capacity=$CAP ≥ 64）" "$CAP" 63
 if [ "$DELTA" -ge 0 ] 2>/dev/null && [ "$DELTA" -le 1 ] 2>/dev/null; then
-	pass "样本守恒：ring_count + dropped == irq_count（$RING_CNT + $DROPPED vs irq $IRQ，差 $DELTA ≤ 1）"
+	pass "样本守恒：ring_count + dropped == irq_count（$RING_CNT + $DROPPED vs irq ${IRQ}，差 $DELTA ≤ 1）"
 else
 	fail "样本守恒：ring_count + dropped == irq_count" \
-	     "实测 $RING_CNT + $DROPPED vs irq $IRQ，差 $DELTA（>1 说明有样本无声蒸发，
+	     "实测 $RING_CNT + $DROPPED vs irq ${IRQ}，差 ${DELTA}（>1 说明有样本无声蒸发，
 	     例如 copy_to_user 失败后直接丢弃）"
 fi
 DAC=$(tag_val /tmp/ring.txt dropped_at_capacity 0)
@@ -79,7 +79,7 @@ check_eq "快照内样本 seq 严格递增（无错位/回退）" "1" "$MONO"
 SEQ_ADV=$(tag_val /tmp/ring.txt shm_seq_advances 0)
 SEQ_PF=$(tag_val /tmp/ring.txt shm_seq_probe_first 0)
 SEQ_PL=$(tag_val /tmp/ring.txt shm_seq_probe_last 0)
-check_eq "共享区 seq 真的在内核侧推进（探针：$SEQ_PF → $SEQ_PL）" "1" "$SEQ_ADV"
+check_eq "共享区 seq 真的在内核侧推进（探针：$SEQ_PF → ${SEQ_PL}）" "1" "$SEQ_ADV"
 
 DISTINCT=$(tag_val /tmp/ring.txt drained_seq_distinct 0)
 check_eq "连读 10 个样本序号严格递增（历史被保留，不是只有最新一个）" "1" "$DISTINCT"
@@ -144,7 +144,7 @@ check_gt "并发确实消费到了样本序号（consumed_seqs）" "$CSEQ" 0
 check_eq "出队全局无重复（dup_seqs=0，即无"同一样本被读两次"）" "0" "$CDUP"
 CSEQMIN=$(tag_val /tmp/conc.txt seq_min 0)
 CSEQMAX=$(tag_val /tmp/conc.txt seq_max 0)
-info "并发消费序号范围：$CSEQMIN ~ $CSEQMAX（缺口数=$(tag_val /tmp/conc.txt seq_gaps 0)，缺口来自队满丢弃/EAGAIN，属正常）"
+info "并发消费序号范围：$CSEQMIN ~ ${CSEQMAX}（缺口数=$(tag_val /tmp/conc.txt seq_gaps 0)，缺口来自队满丢弃/EAGAIN，属正常）"
 
 check_true "concurrency_test 退出码为 0" "0" "$RC_CONC"
 check_contains "concurrency_test 整体结论为 PASS" /tmp/conc.txt "\[CONC\] OVERALL=PASS"

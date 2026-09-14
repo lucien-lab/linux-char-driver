@@ -34,7 +34,7 @@ I2CDEV=$(ls -d /sys/bus/i2c/devices/*-0048 2>/dev/null | head -1)
 check_nonempty "子节点 sensor@48 被实例化成 i2c 从设备" "$I2CDEV"
 cat "$I2CDEV/name" > /tmp/i2cname.txt 2>/dev/null
 check_contains "从设备名来自设备树 compatible（sensor-char）" /tmp/i2cname.txt "sensor-char"
-info "从设备节点：$I2CDEV，name=$(cat /tmp/i2cname.txt 2>/dev/null)"
+info "从设备节点：${I2CDEV}，name=$(cat /tmp/i2cname.txt 2>/dev/null)"
 
 info "== 3) 驱动以 i2c_driver 绑定 =="
 readlink -f "$I2CDEV/driver" > /tmp/i2cdrv.txt 2>/dev/null
@@ -79,7 +79,7 @@ if [ -n "$REGMAPDIR" ]; then
         fi
 
         if [ "$RAW_C" = "0001" ]; then
-            pass "regmap CONFIG 语义正确（0x$RAW_C：bit0=1 连续转换已使能）"
+            pass "regmap CONFIG 语义正确（0x${RAW_C}：bit0=1 连续转换已使能）"
         else
             fail "regmap CONFIG 语义正确" "0x$RAW_C 的 bit0 不是 1（期望 0x0001 使能连续转换）"
         fi

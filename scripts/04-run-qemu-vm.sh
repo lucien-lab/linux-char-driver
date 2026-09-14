@@ -16,7 +16,7 @@ DTB=$HOME/virt-sensor.dtb
 INITRD=$HOME/initramfs.cpio.gz
 
 for f in "$IMAGE" "$DTB" "$INITRD"; do
-    [ -e "$f" ] || { echo "缺少产物：$f，请先运行 scripts/03-build-all-vm.sh"; exit 1; }
+    [ -e "$f" ] || { echo "缺少产物：${f}，请先运行 scripts/03-build-all-vm.sh"; exit 1; }
 done
 
 # 说明：

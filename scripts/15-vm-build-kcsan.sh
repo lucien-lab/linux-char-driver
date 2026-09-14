@@ -45,6 +45,6 @@ grep -E "^CONFIG_KCSAN=|^CONFIG_EXPERT=|^# CONFIG_KCSAN is not set" .config | se
 
 make -j"$(nproc)" Image modules
 rc=$?
-echo "==> make 退出码=$rc（$(date '+%T')）"
+echo "==> make 退出码=${rc}（$(date '+%T')）"
 ls -lh arch/arm64/boot/Image 2>/dev/null
 exit $rc

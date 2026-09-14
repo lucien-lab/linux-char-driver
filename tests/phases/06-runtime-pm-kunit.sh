@@ -47,9 +47,9 @@ check_exists "power/runtime_suspended_time 存在" $PWR/runtime_suspended_time
 
 info "== 1) runtime PM 已启用 =="
 ST0=$(cat $PWR/runtime_status 2>/dev/null)
-info "runtime_status = $ST0（unsupported 表示驱动没调 pm_runtime_enable）"
+info "runtime_status = ${ST0}（unsupported 表示驱动没调 pm_runtime_enable）"
 case "$ST0" in
-	active|suspended) pass "runtime PM 已启用（runtime_status=$ST0，不是 unsupported）" ;;
+	active|suspended) pass "runtime PM 已启用（runtime_status=${ST0}，不是 unsupported）" ;;
 	*) fail "runtime PM 已启用（runtime_status 不应是 unsupported）" "实际=$ST0" ;;
 esac
 
@@ -90,7 +90,7 @@ check_gt "挂起前确实产生过样本（seq=$SEQ_A > 0）" "$SEQ_A" 0
 sleep 2
 SEQ_B=$(cat $SYS/seq 2>/dev/null)
 IRQ_B=$(sed -n 's/.* irq=\([0-9]*\) .*/\1/p' $DBG/stats 2>/dev/null | head -1)
-info "挂起 2 秒：seq $SEQ_A -> $SEQ_B，irq $IRQ_A -> $IRQ_B"
+info "挂起 2 秒：seq $SEQ_A -> ${SEQ_B}，irq $IRQ_A -> $IRQ_B"
 check_eq "挂起期间样本序号冻结" "$SEQ_A" "$SEQ_B"
 check_eq "挂起期间中断计数冻结" "$IRQ_A" "$IRQ_B"
 

@@ -32,10 +32,10 @@ SEQ=$(cat $SYS/seq 2>/dev/null)
 IE=$(cat $SYS/i2c_errors 2>/dev/null)
 RC=$(cat $SYS/ring_capacity 2>/dev/null)
 info "读到的值：interval_ms=$IV seq=$SEQ i2c_errors=$IE ring_capacity=$RC"
-check_true "interval_ms 是数字（$IV）"  "$(echo "$IV" | grep -cE '^[0-9]+$')" "1"
-check_true "seq 是数字（$SEQ）"          "$(echo "$SEQ" | grep -cE '^[0-9]+$')" "1"
-check_true "i2c_errors 是数字（$IE）"    "$(echo "$IE" | grep -cE '^[0-9]+$')" "1"
-check_true "ring_capacity 是数字（$RC）" "$(echo "$RC" | grep -cE '^[0-9]+$')" "1"
+check_true "interval_ms 是数字（${IV}）"  "$(echo "$IV" | grep -cE '^[0-9]+$')" "1"
+check_true "seq 是数字（${SEQ}）"          "$(echo "$SEQ" | grep -cE '^[0-9]+$')" "1"
+check_true "i2c_errors 是数字（${IE}）"    "$(echo "$IE" | grep -cE '^[0-9]+$')" "1"
+check_true "ring_capacity 是数字（${RC}）" "$(echo "$RC" | grep -cE '^[0-9]+$')" "1"
 
 # ring_capacity 必须反映 kfifo 的**实际**容量（向上取整到 2 的幂后是 85），
 # 而不是驱动请求的 64：用户态要用它判断"满没满"，必须拿到真实值。
@@ -124,8 +124,8 @@ echo 3 > /sys/kernel/debug/virt_i2c/inject_error
 sleep 1
 ie_after=$(cat $SYS/i2c_errors 2>/dev/null)
 delta=$((ie_after - ie_before))
-info "注入 3 次：i2c_errors $ie_before → $ie_after（增量 $delta）"
-check_gt "注入 3 次后 i2c_errors 增量 >= 3（实测 $delta）" "$delta" 2
+info "注入 3 次：i2c_errors $ie_before → ${ie_after}（增量 ${delta}）"
+check_gt "注入 3 次后 i2c_errors 增量 >= 3（实测 ${delta}）" "$delta" 2
 # 注入耗尽后驱动必须自己恢复（regmap 报错只在错误处理路径里，不应把设备搞死）
 sleep 1
 ie_recover_before=$(cat $SYS/i2c_errors 2>/dev/null)
@@ -133,7 +133,7 @@ SEQ_R1=$(cat $SYS/seq 2>/dev/null)
 sleep 1
 SEQ_R2=$(cat $SYS/seq 2>/dev/null)
 info "恢复期样本序号：$SEQ_R1 → $SEQ_R2"
-check_gt "注入结束后采样仍在推进（序号增长，实测 $SEQ_R1 → $SEQ_R2）" "$SEQ_R2" "$SEQ_R1"
+check_gt "注入结束后采样仍在推进（序号增长，实测 $SEQ_R1 → ${SEQ_R2}）" "$SEQ_R2" "$SEQ_R1"
 
 info "== 9) 注入后用户态通路仍正常 =="
 /bin/sensor_test > /tmp/utest04.txt 2>&1

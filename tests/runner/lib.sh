@@ -110,7 +110,7 @@ check_cmd() {
     if [ $rc -eq 0 ]; then
         pass "$name"
     else
-        fail "$name" "退出码=$rc，输出: $(tail -3 /tmp/cmd-out.txt | tr '\n' ' ')"
+        fail "$name" "退出码=${rc}，输出: $(tail -3 /tmp/cmd-out.txt | tr '\n' ' ')"
     fi
     return $rc
 }
