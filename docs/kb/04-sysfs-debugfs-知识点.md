@@ -131,7 +131,7 @@ open=1 read=0 irq=3 i2c_err=0 interval=20 dropped=0 ring_count=3 ring_capacity=8
 
 ### 1.4 debugfs 明确"不是稳定 ABI"的含义
 
-`Documentation/filesystems/debugfs.rst:9-17`：
+`Documentation/filesystems/debugfs.rst:10-18`：
 
 > Debugfs exists as a simple way for kernel developers to make information
 > available to user space. Unlike /proc, which is only meant for information
@@ -153,7 +153,7 @@ open=1 read=0 irq=3 i2c_err=0 interval=20 dropped=0 ring_count=3 ring_capacity=8
    不是让你随手乱改的许可证**。写接口时仍然要有设计。
 
 另一条容易忽略的规则：debugfs API 是 **GPL-only** 导出的
-（`Documentation/filesystems/debugfs.rst:26` "the debugfs API is exported GPL-only to modules"），
+（`Documentation/filesystems/debugfs.rst:29` "the debugfs API is exported GPL-only to modules"），
 所以从模块里用 debugfs 必须 `MODULE_LICENSE("GPL")`。本项目模块就是 GPL。
 
 ### 1.5 本项目的目录布局与选择
@@ -256,12 +256,13 @@ struct device_attribute {
   就是在引用那个全局变量；`interval_ms_show/store` 也必须是这个名字，否则编译不过。
 - **`attr` 是结构体第一个成员**，所以 `struct attribute *` 和 `struct device_attribute *`
   可以靠 `container_of()` 互转——这正是内核通用层的分派手法
-  （`drivers/base/core.c:2367` `#define to_dev_attr(_attr) container_of(_attr, struct device_attribute, attr)`）。
+  （`drivers/base/core.c:2369` `#define to_dev_attr(_attr) container_of(_attr, struct device_attribute, attr)`）。
 - **`RO` 版本只给 `.show`，`mode` 硬编码 0444；`RW` 给 `.show`+`.store`，`mode=0644`**。
-  还有 `DEVICE_ATTR_WO`（0200，只有 store，本项目 `virt_i2c` 的 `inject_error` 用它；
-  不过 `virt_i2c.c` 是手写 fops 而不是 DEVICE_ATTR，见 `driver/virt_i2c.c:322-327`）。
-- 如果确实要自定义起始模式（例如 0600），用 `DEVICE_ATTR_RW_MODE(name, 0600)`
-  （`include/linux/device.h:185-190`）。
+  还有 `DEVICE_ATTR_WO`（0200，只有 store）。本项目的 `virt_i2c/inject_error`
+  权限也是 0200，但它用的是**手写 fops + `debugfs_create_file()`**，不是 DEVICE_ATTR
+  （`driver/virt_i2c.c:322-327`）——`DEVICE_ATTR_*` 只适用于挂到 device kobject 上的属性。
+- 如果确实要自定义属性模式（例如 0600），用 `DEVICE_ATTR_ADMIN_RW(name)`
+  （`include/linux/device.h:188-189`，展开为 `__ATTR_RW_MODE(_name, 0600)`）。
 
 ### 2.2 kobject / attribute 模型与 attribute_group 注册
 
@@ -316,7 +317,7 @@ sysfs_remove_group(&sd->char_dev->kobj, &sensor_attr_group);
 
 - `sysfs_create_group()` 必须在 kobject 已注册（`sd->char_dev` 已 `device_create()`）之后调用；
   `internal_create_group()` 里 `WARN_ON(!kobj || (!update && !kobj->sd))` 检查的就是这个
-  （`fs/sysfs/group.c:113-114`）。
+  （`fs/sysfs/group.c:115`）。
 - `sysfs_remove_group()` 必须在 `device_destroy()` **之前**调用（`driver/sensor_char.c:1365-1372` 的注释）。
   否则属性回调里的 `dev_get_drvdata(dev)` 可能拿到已经释放的 `sd`，留下 use-after-free 窗口。
 - 注册路径失败时要按反序清理：本项目 probe 失败路径里先 `sysfs_remove_group()` 再
@@ -332,7 +333,7 @@ sysfs_remove_group(&sd->char_dev->kobj, &sensor_attr_group);
      └─ kernfs_fop_read_iter()                      fs/kernfs/file.c:294
          └─ seq_read_iter()   （属性文件走 seq_file 路径）  fs/kernfs/file.c:297, fs/seq_file.c:171
              └─ sysfs_kf_seq_show()                 fs/sysfs/file.c:40
-                 ├─ seq_get_buf()：保证缓冲区 >= PAGE_SIZE，并 memset 清零   fs/sysfs/file.c:47-54
+                 ├─ seq_get_buf()：保证缓冲区 >= PAGE_SIZE，并 memset 清零   fs/sysfs/file.c:52-59
                  └─ ops->show(kobj, kn->priv, buf)
                      └─ dev_attr_show()             drivers/base/core.c:2371
                          └─ dev_attr->show()        ← 即 interval_ms_show，driver/sensor_char.c:932
@@ -373,7 +374,7 @@ sysfs_remove_group(&sd->char_dev->kobj, &sensor_attr_group);
 **（1）缓冲上限是 4096 字节。**
 
 - show 方向：`sysfs_kf_seq_show()` 拿到的一定是 `>= PAGE_SIZE` 的缓冲
-  （`fs/sysfs/file.c:47-54`），并 `memset(buf, 0, PAGE_SIZE)`；随后
+  （`fs/sysfs/file.c:52-59`），并 `memset(buf, 0, PAGE_SIZE)`；随后
   `dev_attr_show()` 会检查 `ret >= PAGE_SIZE` 并打印
   `"dev_attr_show: %pS returned bad count"`（`drivers/base/core.c:2380-2383`）。
   也就是说 **show 最多只能产出 4095 字节有效内容**。这就是为什么规范写法是
@@ -516,8 +517,8 @@ if (IS_ERR(sd->dbg)) {
 "If debugfs is not enabled in the kernel, the value -%ENODEV will be returned"
 （如 `fs/debugfs/inode.c:581, 475`）。"not enabled in the kernel" 指 **`CONFIG_DEBUG_FS=n`**：
 此时 `include/linux/debugfs.h` 里的静态内联桩函数直接
-`return ERR_PTR(-ENODEV);`（`include/linux/debugfs.h:187` 等一处，
-各 create 系列桩返回值集中在 `:187/194/202/214/221/229`）。
+`return ERR_PTR(-ENODEV);`（`include/linux/debugfs.h:187`；
+其它 create 系列桩的返回值集中在 `:187/194/202/214/221/229`）。
 
 如果 `CONFIG_DEBUG_FS=y` 但**运行期被禁用挂载**（cmdline `debugfs=no-mount`），
 `debugfs_init()` 提前返回 `-EPERM`，`debugfs_registered` 保持 false
@@ -586,7 +587,7 @@ remove 两处都调了。
 
 更妙的是 `IS_ERR_OR_NULL` 也让 `debugfs_create_file()` 的父目录参数可以传
 `ERR_PTR`：`__debugfs_create_file()` → `start_creating()` 里
-`if (IS_ERR(parent)) return parent;`（`fs/debugfs/inode.c:352-353`）。
+`if (IS_ERR(parent)) return parent;`（`fs/debugfs/inode.c:354`）。
 不过本项目在 `IS_ERR(sd->dbg)` 时直接把 `sd->dbg` 置 NULL 后就跳过建文件了，
 不依赖这个特性。
 
@@ -894,7 +895,7 @@ delta=$((ie_after - ie_before))
 
 | 注入器 | 配置项 | 注入点 | 源码 |
 |---|---|---|---|
-| `failslab` | `CONFIG_FAILSLAB` | `kmalloc`/slab 分配失败 | `mm/failslab.c` |
+| `failslab` | `CONFIG_FAILSLAB` | `kmalloc`/slab 分配失败 | `mm/failslab.c:17`（`__should_failslab`） |
 | `fail_page_alloc` | `CONFIG_FAIL_PAGE_ALLOC` | 页分配器失败 | `mm/fail_page_alloc.c:24-42`（`__should_fail_alloc_page`） |
 | `fail_function` | `CONFIG_FAIL_FUNCTION` + `CONFIG_FUNCTION_ERROR_INJECTION` | 让带 `ALLOW_ERROR_INJECTION` 标注的函数返回错误 | `kernel/fail_function.c:169-181`（kprobe 入口）、`:279`（`within_error_injection_list`） |
 
@@ -946,7 +947,7 @@ kobject/attribute 模型；debugfs 是开发者自己组织的目录树，不要
 ② **一旦发布就冻结格式**：sysfs 是 ABI，加/删/改字段都是破坏用户态，
 而统计的口味恰恰是"经常想加个新指标"。③ 文档化成本：每个 sysfs 属性都要在
 `Documentation/ABI` 里登记并承诺兼容，调试信息不配这个成本。
-所以本项目把 `Open/read/irq/i2c_err/...` 一行汇总放 `debugfs/stats`，
+所以本项目把 `open/read/irq/i2c_err/...` 一行汇总放 `debugfs/stats`，
 把单值且稳定的 `seq`/`i2c_errors`/`ring_capacity` 放 sysfs。
 **追问："那用户态工具要用统计怎么办？"** 答：用 debugfs、接受它可能变；
 真要做成接口，就得设计成多个 sysfs 单值属性并登记 ABI（本项目的
@@ -972,7 +973,7 @@ in theory there are no stability constraints"（`Documentation/filesystems/debug
 "The real world is not always so simple"——现实里一旦某个 debugfs 接口被
 生产工具用了，改它一样会破坏别人。所以准确说法是：**内核给了你"不必承诺"的自由，
 但设计时仍要当成"可能要维护很久"来写**。另外 debugfs API 是 GPL-only 导出
-（`Documentation/filesystems/debugfs.rst:26`），模块必须 GPL。
+（`Documentation/filesystems/debugfs.rst:29`），模块必须 GPL。
 
 ### Q5：驱动里怎么做"在线调参"？
 
@@ -1013,7 +1014,7 @@ in theory there are no stability constraints"（`Documentation/filesystems/debug
 ### Q8：show/store 的缓冲区有多大？超了会怎样？
 
 **答**：都是 `PAGE_SIZE`（4096）。读方向：`sysfs_kf_seq_show` 保证传给 `show` 的
-`buf` 至少一页并清零（`fs/sysfs/file.c:47-54`），`dev_attr_show` 检测
+`buf` 至少一页并清零（`fs/sysfs/file.c:52-59`），`dev_attr_show` 检测
 `ret >= PAGE_SIZE` 并打印 bad count 警告（`drivers/base/core.c:2380-2383`），
 所以 `show` 最多产出 4095 字节，规范写法是 `sysfs_emit()`（内部 `vscnprintf(buf, PAGE_SIZE, ...)`，
 `fs/sysfs/file.c:735`）。写方向：`kernfs_fop_write_iter` 把单次写 clamp 到一页
@@ -1229,7 +1230,7 @@ LC_ALL=C LANE=04 bash /Users/lucien/workspace/self-study/projects/wt-04/scripts/
 include/linux/device.h:106         struct device_attribute
 include/linux/device.h:156         DEVICE_ATTR
 include/linux/device.h:179         DEVICE_ATTR_RW
-include/linux/device.h:185         DEVICE_ATTR_ADMIN_RW / _MODE
+include/linux/device.h:188         DEVICE_ATTR_ADMIN_RW（0600）
 include/linux/device.h:197         DEVICE_ATTR_RO
 include/linux/sysfs.h:30           struct attribute
 include/linux/sysfs.h:84           struct attribute_group
@@ -1280,7 +1281,7 @@ mm/fail_page_alloc.c:24,42          __should_fail_alloc_page
 kernel/fail_function.c:169,279      fei_kprobe_handler / within_error_injection_list
 lib/Kconfig.debug:1928,1942,1985    FAULT_INJECTION / FAIL_PAGE_ALLOC / FAIL_FUNCTION
 Documentation/filesystems/sysfs.rst:62,419
-Documentation/filesystems/debugfs.rst:13,15,26
+Documentation/filesystems/debugfs.rst:13,15,29
 Documentation/filesystems/configfs.rst:16,34,63
 Documentation/ABI/README           四档稳定性
 ```
