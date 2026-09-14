@@ -11,6 +11,12 @@
 obj-m += sensor_char.o
 obj-m += virt_i2c.o
 
+# KUnit 单元测试模块（阶段 06）：只测纯逻辑（sensor_calc.h），
+# 不参与正常功能，因此单独一个 .ko，由阶段 06 的测试脚本按需 insmod。
+# 注意：KUnit 的 kunit_* 符号在内核里是 EXPORT_SYMBOL_GPL，本模块是 GPL，
+# 所以可以直接编成外部模块，不需要把它编进内核。
+obj-m += sensor_kunit.o
+
 KDIR ?= /lib/modules/$(shell uname -r)/build
 PWD  := $(shell pwd)
 

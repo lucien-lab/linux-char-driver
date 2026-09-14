@@ -152,14 +152,14 @@ check_contains "concurrency_test 整体结论为 PASS" /tmp/conc.txt "\[CONC\] O
 info "== 3) seqlock 放大器验证（受控放大写入窗口，让重试路径真的被执行）=="
 # 为什么必须做这一步：正常写入窗口只有 ~1µs，而采样周期是 10ms，
 # 读者撞上"写入中"的概率约 10⁻⁴ —— "seqlock 生效"的正向证据在自然条件下拿不到。
-# 打开驱动的 shm_publish_delay_us 参数把窗口从 ~1µs 放大到 1ms 后：
+# 打开驱动的 shm_publish_delay_us 参数把窗口从 ~1µs 放大到 5ms 后：
 #   重试次数 > 0  ：证明协议路径真的被执行（而不是重试逻辑是死代码）
 #   撕裂样本 = 0 ：证明协议真的有效（一致性成立）
 # 这两项配合起来，才能把"假 seqlock"与"真 seqlock"区分开。
 KVER=$(uname -r)
 AMP_OK=1
 if rmmod sensor_char 2>/tmp/rmmod.txt && \
-   insmod "/lib/modules/$KVER/sensor_char.ko" shm_publish_delay_us=1000 2>/tmp/insmod.txt; then
+   insmod "/lib/modules/$KVER/sensor_char.ko" shm_publish_delay_us=5000 2>/tmp/insmod.txt; then
 	sleep 1
 	/bin/ring_mmap_test quick > /tmp/ring_amp.txt 2>&1
 	RC_AMP=$?
@@ -178,7 +178,7 @@ if rmmod sensor_char 2>/tmp/rmmod.txt && \
 	check_true "放大器模式程序退出码为 0" "0" "$RC_AMP"
 else
 	AMP_OK=0
-	fail "放大器模式重新加载驱动（insmod shm_publish_delay_us=1000）" \
+	fail "放大器模式重新加载驱动（insmod shm_publish_delay_us=5000）" \
 	     "rmmod/insmod 失败：$(cat /tmp/rmmod.txt /tmp/insmod.txt 2>/dev/null | head -2 | tr '\n' ' ')"
 fi
 

@@ -112,6 +112,12 @@ check_contains "ring 含样本明细 sample[" /tmp/dring.txt "sample\["
 check_contains "样本明细含 seq 与温度" /tmp/dring.txt "temp_milli="
 
 info "== 8) 故障注入：错误处理路径真的被执行 =="
+# 阶段 06 起驱动启用了 Runtime PM：无人持有设备时会自动挂起并**停止采样**。
+# 本步骤依赖"后台周期性采样在跑"（注入的失败次数要靠周期性 I2C 读来消耗，
+# 恢复期也要靠采样推进才能观察到序号增长），所以这里显式打开设备持有一个引用。
+# 这不是放宽检查，而是把一个隐含前提写出来：否则本步骤实际测到的是
+# "挂起后设备不采样"，与故障注入想验证的错误处理路径毫无关系。
+exec 3<>/dev/sensor0
 # 顺序很关键：先取基准值，再注入，期间不要读 regs 之类的接口（会消耗注入次数）。
 ie_before=$(cat $SYS/i2c_errors 2>/dev/null)
 echo 3 > /sys/kernel/debug/virt_i2c/inject_error
@@ -133,6 +139,9 @@ info "== 9) 注入后用户态通路仍正常 =="
 /bin/sensor_test > /tmp/utest04.txt 2>&1
 check_true "sensor_test 退出码为 0" "0" "$?"
 check_contains "用户态测试正常结束" /tmp/utest04.txt "测试结束"
+# 归还在步骤 8 持有的 runtime PM 引用（之后设备可再次自动挂起）
+exec 3<&- 2>/dev/null
+exec 3>&- 2>/dev/null
 
 info "== 10) 内核告警检查（测试体之后重新取样）=="
 dmesg > /tmp/dmesg04.txt 2>/dev/null

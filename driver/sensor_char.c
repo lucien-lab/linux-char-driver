@@ -85,8 +85,10 @@
 #include <linux/string.h>
 #include <linux/mod_devicetable.h>
 #include <linux/err.h>
+#include <linux/pm_runtime.h>		/* Runtime PM：空闲自动挂起（阶段 06） */
 
 #include "sensor_ioctl.h"
+#include "sensor_calc.h"		/* 纯逻辑计算：驱动与 KUnit 测试共用同一份实现 */
 
 #define DRV_NAME	"sensor_char"
 #define SENSOR_REG_TEMP		0x00	/* 温度寄存器（只读；真机 SHT30 为 0x0000 命令字） */
@@ -112,11 +114,12 @@ static_assert(sizeof(struct sensor_shm) <= PAGE_SIZE,
 	      "sensor_shm 必须能放进一页（mmap 只映射一页）");
 
 /*
- * 传感器寄存器原始值 -> 毫摄氏度：LSB = 1/16 °C = 62.5 m°C。
- * 必须先转成有符号 16 位再乘：寄存器在负温时是二进制补码形式，
- * 直接拿 u16 做算术会得到 (65536 - x) 这样的大正数，负温读数就错了。
+ * 传感器寄存器原始值 -> 毫摄氏度：换算函数定义在 sensor_calc.h，
+ * 由驱动与 KUnit 测试（sensor_kunit.ko）**共用同一份实现** ——
+ * 否则测试测的是一份代码、驱动跑的是另一份，单元测试就失去意义。
+ * 关键点：12 位补码必须先做符号扩展再乘，直接拿 u16 做算术会把
+ * 负温度算成大正数（-0.0625 ℃ 变成 +255.9 ℃）。
  */
-#define RAW_TO_MILLI(raw)	((s32)(raw) * 1000 / 16)
 
 struct sensor_dev {
 	/* 字符设备 */
@@ -168,6 +171,13 @@ struct sensor_dev {
 	u32			read_count;
 	u32			irq_count;
 	u32			i2c_errors;
+
+	/*
+	 * Runtime PM（阶段 06）。
+	 * 用 volatile + READ_ONCE/WRITE_ONCE 读写：它会被定时器回调（softirq）、
+	 * 线程化中断下半部、进程上下文（ioctl/sysfs/open）与 PM 工作队列共同访问。
+	 */
+	bool			suspended;	/* true = 已挂起：定时器与中断已停 */
 };
 
 /*
@@ -319,7 +329,8 @@ static void sensor_shm_publish(struct sensor_dev *sd, const struct sensor_sample
 		udelay(sd->shm_publish_delay_us);
 
 	shm->samples[shm->write_idx] = *s;
-	shm->write_idx = (shm->write_idx + 1) % SENSOR_SHM_SAMPLES;
+	/* 回绕推进共用 sensor_calc.h 的实现（回绕边界有 KUnit 覆盖） */
+	shm->write_idx = sensor_fifo_next(shm->write_idx, SENSOR_SHM_SAMPLES);
 	if (shm->count < SENSOR_SHM_SAMPLES)
 		shm->count++;
 
@@ -365,7 +376,7 @@ static irqreturn_t sensor_irq_thread(int irq, void *data)
 	 * 数据由 virt_i2c.ko 里的"芯片"按内部计数确定性地变化（24.0~26.0 °C），
 	 * 驱动只负责换算；真机上这里换成 SHT30 的转换公式，其余代码不变。
 	 */
-	next = RAW_TO_MILLI(raw);
+	next = sensor_raw_to_milli(raw);
 
 	/*
 	 * 注意：sd->lock 在本函数入口已经持有，从 regmap_read 到样本入队、
@@ -486,23 +497,38 @@ static int sensor_fasync(int fd, struct file *file, int on);
 /*
  * open()：只记录私有数据、累计打开次数，不再分配任何 per-open 状态。
  * （阶段 01 的 struct sensor_file 在阶段 03 退役：可读性由共享队列决定。）
+ *
+ * 阶段 06 新增：占用一个 runtime PM 引用。
+ *   只要还有进程打开着设备，就不允许自动挂起 —— 否则正在 read() 的进程会因为
+ *   采样被停掉而卡在超时上（行为上看起来像"驱动坏了"）。
+ *   用 pm_runtime_resume_and_get() 而不是 pm_runtime_get_sync()：前者在出错时
+ *   会把引用退还（get_sync 会留下一个引用，导致设备再也挂不下去，是经典泄漏）。
  */
 static int sensor_open(struct inode *inode, struct file *file)
 {
 	struct sensor_dev *sd = container_of(inode->i_cdev, struct sensor_dev, cdev);
+	struct device *dev = &sd->client->dev;
+	int ret;
+
+	ret = pm_runtime_resume_and_get(dev);
+	if (ret < 0) {
+		dev_err(dev, "runtime resume failed: %d\n", ret);
+		return ret;
+	}
 
 	file->private_data = sd;
 
 	mutex_lock(&sd->lock);
 	sd->open_count++;
 	mutex_unlock(&sd->lock);
-	dev_info(&sd->client->dev, "opened (count=%u)\n", sd->open_count);
+	dev_info(dev, "opened (count=%u)\n", sd->open_count);
 	return 0;
 }
 
 static int sensor_release(struct inode *inode, struct file *file)
 {
 	struct sensor_dev *sd = file->private_data;
+	struct device *dev = &sd->client->dev;
 
 	/*
 	 * 摘除异步通知：fasync_helper(..., 0, ...) 会遍历 fasync 链表把本 file 摘掉。
@@ -511,7 +537,19 @@ static int sensor_release(struct inode *inode, struct file *file)
 	sensor_fasync(-1, file, 0);
 
 	file->private_data = NULL;
-	dev_info(&sd->client->dev, "closed\n");
+
+	/*
+	 * 归还 runtime PM 引用（与 open 里的 get 严格配对）：
+	 *   mark_last_busy()  记录"最后一次使用时刻"，autosuspend 的计时从它开始；
+	 *                     （少了这一步，核心会认为设备从上次忙到现在已经超时，可能立即挂起）
+	 *   put_autosuspend() 引用降到 0 后按 autosuspend 延迟（1 秒）安排挂起。
+	 * 这一秒的缓冲是刻意的：用户态典型的"读完就关、过一会再开"不会引发反复的
+	 * suspend/resume（每次 resume 都要重新拉 I2C 总线，代价不小）。
+	 */
+	pm_runtime_mark_last_busy(dev);
+	pm_runtime_put_autosuspend(dev);
+
+	dev_info(dev, "closed\n");
 	return 0;
 }
 
@@ -748,26 +786,33 @@ static ssize_t sensor_write(struct file *file, const char __user *ubuf,
  *   "周期"现在有两个入口——ioctl(SENSOR_IOC_SET_INTERVAL) 与 sysfs 的 interval_ms。
  *   如果两处各写一份判定，它们迟早会漂移（本项目阶段 04 之前的 ioctl 下限是 10ms，
  *   而 sysfs 契约要求 1ms）。用户态就会遇到"同一个设置，走 A 接口成功、走 B 接口失败"
- *   这种最难查的不一致。因此统一为：范围判定一份、生效动作一份，两个入口都调它们。
+ *   这种最难查的不一致。因此统一为：范围判定一份（在 sensor_calc.h 里，
+ *   可被 KUnit 直接覆盖边界）、生效动作一份，两个入口都调它们。
  */
-#define SENSOR_INTERVAL_MIN_MS	1UL
-#define SENSOR_INTERVAL_MAX_MS	60000UL
-
-static bool sensor_interval_valid(unsigned long ms)
-{
-	return ms >= SENSOR_INTERVAL_MIN_MS && ms <= SENSOR_INTERVAL_MAX_MS;
-}
 
 /* 让新周期立即生效：取消后按新周期重启定时器（hrtimer_cancel 会等回调结束） */
 static void sensor_apply_interval(struct sensor_dev *sd, unsigned long ms)
 {
+	struct device *dev = &sd->client->dev;
+
 	mutex_lock(&sd->lock);
 	sd->interval_ms = ms;
 	mutex_unlock(&sd->lock);
 
+	/*
+	 * 设备已被 runtime PM 挂起时不要去启动定时器：那会让"已挂起"的设备偷偷采样，
+	 * runtime_status 与实际行为不一致（阶段 06 的检查项就是靠这个一致性来判断
+	 * "挂起是否真的省电"，不一致会让结论变成假的）。
+	 * 此时只记下新周期，等 resume 时按新值启动。
+	 */
+	if (READ_ONCE(sd->suspended)) {
+		dev_info(dev, "interval -> %lu ms (deferred: device runtime-suspended)\n", ms);
+		return;
+	}
+
 	hrtimer_cancel(&sd->timer);
 	hrtimer_start(&sd->timer, ms_to_ktime(ms), HRTIMER_MODE_REL);
-	dev_info(&sd->client->dev, "interval -> %lu ms\n", ms);
+	dev_info(dev, "interval -> %lu ms\n", ms);
 }
 
 
@@ -1088,9 +1133,23 @@ static ssize_t sensor_dbg_regs_read(struct file *file, char __user *ubuf,
 				    size_t count, loff_t *ppos)
 {
 	struct sensor_dev *sd = file->private_data;
+	struct device *dev = &sd->client->dev;
 	char kbuf[256];
 	unsigned int reg, val;
 	int len = 0, ret;
+
+	/*
+	 * 真机上对设备寄存器发起 I2C 事务前必须先让设备进入活跃状态：
+	 * 挂起时很多芯片的总线接口是关的（读不到、或读到无意义值），
+	 * 所以这里取一次 runtime PM 引用，读完再归还（与 open/read 的用法一致）。
+	 * 这也解释了为什么调试接口也要遵守电源管理——否则"看现场"这个动作
+	 * 本身就能破坏现场。
+	 */
+	ret = pm_runtime_resume_and_get(dev);
+	if (ret < 0) {
+		len = scnprintf(kbuf, sizeof(kbuf), "<runtime resume failed %d>\n", ret);
+		return simple_read_from_buffer(ubuf, count, ppos, kbuf, len);
+	}
 
 	for (reg = SENSOR_REG_TEMP; reg <= SENSOR_REG_CONFIG; reg++) {
 		ret = regmap_read(sd->regmap, reg, &val);
@@ -1101,6 +1160,9 @@ static ssize_t sensor_dbg_regs_read(struct file *file, char __user *ubuf,
 			len += scnprintf(kbuf + len, sizeof(kbuf) - len,
 					 "%02x: %04x\n", reg, val);
 	}
+
+	pm_runtime_mark_last_busy(dev);
+	pm_runtime_put_autosuspend(dev);
 
 	return simple_read_from_buffer(ubuf, count, ppos, kbuf, len);
 }
@@ -1161,6 +1223,82 @@ static const struct regmap_config sensor_regmap_cfg = {
 	.val_bits		= 16,
 	.max_register		= SENSOR_REG_CONFIG,
 	.val_format_endian	= REGMAP_ENDIAN_LITTLE,
+};
+
+/* ============================ Runtime PM（阶段 06）============================
+ *
+ * 要解决的问题：这个驱动在 probe 里启动了一个周期性 hrtimer，它会不停地
+ * 触发中断 -> 线程化下半部 -> 发起 I2C 事务。哪怕没有任何进程打开设备，
+ * 这套动作也一直在跑 —— 在电池设备上就是纯浪费（真实传感器上还意味着
+ * ADC 一直在转换）。
+ *
+ * Runtime PM 的模型是"引用计数 + 回调"：
+ *   * 使用者（本驱动里是 open()）取引用；不使用时归还；
+ *   * 引用降到 0 后，核心在 autosuspend 延迟（1 秒）之后回调 runtime_suspend；
+ *   * 再次有人取引用时，核心回调 runtime_resume。
+ *
+ * 与系统级 suspend（suspend-to-RAM）的区别：runtime PM 对单个设备生效，
+ * 与系统是否睡眠无关，可在运行时反复进出；两者的回调函数集也不同
+ * （SET_RUNTIME_PM_OPS vs SET_SYSTEM_SLEEP_PM_OPS）。
+ * ===========================================================================*/
+
+/* 1 秒的 autosuspend 延迟：在"及时省电"与"避免频繁开关"之间取折中 */
+#define SENSOR_AUTOSUSPEND_DELAY_MS	1000
+
+/*
+ * 注意从这里开始都可以睡眠（PM 回调运行在进程上下文），
+ * 因此可以用 hrtimer_cancel / disable_irq（后者会等正在执行的 handler 结束）。
+ */
+static int sensor_runtime_suspend(struct device *dev)
+{
+	struct sensor_dev *sd = i2c_get_clientdata(to_i2c_client(dev));
+
+	if (!sd)
+		return 0;
+
+	/*
+	 * 真正的"省电"必须停掉数据源：
+	 *   hrtimer_cancel() 会同步等待正在执行的定时器回调结束，再用
+	 *   disable_irq() 关掉中断线（真机上传感器可能自己报 DRDY，光停定时器不够）。
+	 * 只改一个标志而不停硬件，会出现"runtime_status 说已挂起、实际还在采样"
+	 * 这种最典型的假省电（阶段 06 的测试项专门检查这一点）。
+	 *
+	 * 顺序：先停定时器（它可能正在触发中断）再关中断线，
+	 * 反过来做会残留一个已经排队的中断。
+	 */
+	hrtimer_cancel(&sd->timer);
+	disable_irq(sd->virq);
+	WRITE_ONCE(sd->suspended, true);
+
+	dev_info(dev, "runtime suspend: sampling stopped (irq_count=%u seq=%u)\n",
+		 sd->irq_count, sd->latest.seq);
+	return 0;
+}
+
+static int sensor_runtime_resume(struct device *dev)
+{
+	struct sensor_dev *sd = i2c_get_clientdata(to_i2c_client(dev));
+	unsigned long interval;
+
+	if (!sd)
+		return 0;
+
+	/*
+	 * 恢复采样。用 interval_ms 的当前值重启定时器：挂起期间用户可能通过
+	 * sysfs/ioctl 改过周期（sensor_apply_interval 那时只能"记账"），
+	 * 恢复时按最新值生效，不会丢掉设置。
+	 */
+	interval = READ_ONCE(sd->interval_ms);
+	enable_irq(sd->virq);
+	WRITE_ONCE(sd->suspended, false);
+	hrtimer_start(&sd->timer, ms_to_ktime(interval), HRTIMER_MODE_REL);
+
+	dev_info(dev, "runtime resume: sampling restarted (interval=%lums)\n", interval);
+	return 0;
+}
+
+static const struct dev_pm_ops sensor_pm_ops = {
+	SET_RUNTIME_PM_OPS(sensor_runtime_suspend, sensor_runtime_resume, NULL)
 };
 
 static int sensor_probe(struct i2c_client *client)
@@ -1326,6 +1464,32 @@ static int sensor_probe(struct i2c_client *client)
 	sd->timer.function = sensor_timer_fn;
 	hrtimer_start(&sd->timer, ms_to_ktime(sd->interval_ms), HRTIMER_MODE_REL);
 
+	/*
+	 * 8. Runtime PM：让设备在无人使用时自动挂起（停采样、关中断）。
+	 *
+	 * 引用计数要配平——用 get_noresume() + put_autosuspend() 成对：
+	 *   get_noresume()  : 声明"probe 期间设备是活的"，但不去触发一次 resume；
+	 *   set_active()    : 把 PM 状态标成 active（此时定时器确实已在跑）；
+	 *   put_autosuspend(): 交还上面那一个引用 -> 引用降到 0，
+	 *                      若此后没有任何 open，1 秒后内核回调 runtime_suspend。
+	 *
+	 * 为什么必须在 probe 里配平：若只 get 不 put（或什么都不做），
+	 * 引用计数永远不为 0，设备永远不会挂起，autosuspend 形同虚设——
+	 * 而表面上一切正常（不会有任何报错），属于最难发现的一类错误。
+	 * 调用的顺序也要注意：先 set_active 再 enable，否则设备会被当成
+	 * "已挂起"而多跑一次无意义的 resume。
+	 */
+	pm_runtime_get_noresume(dev);
+	pm_runtime_set_active(dev);
+	pm_runtime_enable(dev);
+	pm_runtime_set_autosuspend_delay(dev, SENSOR_AUTOSUSPEND_DELAY_MS);
+	pm_runtime_use_autosuspend(dev);
+	pm_runtime_mark_last_busy(dev);
+	pm_runtime_put_autosuspend(dev);
+
+	dev_info(dev, "runtime PM enabled (control=%s autosuspend=%dms)\n",
+		 pm_runtime_enabled(dev) ? "auto" : "on",
+		 SENSOR_AUTOSUSPEND_DELAY_MS);
 	dev_info(dev, "probe done: major=%d minor=%d /dev/sensor%d\n",
 		 MAJOR(sd->devt), MINOR(sd->devt), MINOR(sd->devt));
 	return 0;
@@ -1358,6 +1522,19 @@ err_clear_clientdata:
 static void sensor_remove(struct i2c_client *client)
 {
 	struct sensor_dev *sd = i2c_get_clientdata(client);
+
+	/*
+	 * 先关掉 runtime PM，再拆硬件。
+	 *
+	 * 为什么这个顺序最安全：pm_runtime_disable() 会同步等待正在执行的
+	 * suspend/resume 回调结束，并让此后所有 PM 请求失败退出。
+	 * 如果反过来（先 hrtimer_cancel/free_irq，最后才 disable），
+	 * 在这个窗口里内核仍可能回调 sensor_runtime_resume()——
+	 * 而 resume 里会 hrtimer_start()，把采样在原地重新启动，
+	 * 与"正在拆卸设备"直接矛盾。
+	 * 本函数开头正好是客户端已经与驱动解除绑定的时刻，也没有新的 open 能进来。
+	 */
+	pm_runtime_disable(&client->dev);
 
 	hrtimer_cancel(&sd->timer);		/* 停掉采样源 */
 	free_irq(sd->virq, sd);
@@ -1407,6 +1584,9 @@ static struct i2c_driver sensor_i2c_driver = {
 	.driver		= {
 		.name		= DRV_NAME,
 		.of_match_table	= sensor_of_match,
+		/* Runtime PM 回调挂在这里；挂到 driver 上而不是 device 上，
+		 * 是因为同一套逻辑适用于该驱动的所有设备实例。 */
+		.pm		= &sensor_pm_ops,
 	},
 	.probe		= sensor_probe,
 	.remove		= sensor_remove,
