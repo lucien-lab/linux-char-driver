@@ -29,13 +29,20 @@ for f in "$IMAGE" "$DTB" "$INITRD"; do
 done
 
 mkdir -p "$PROJ/logs"
-LOG="$PROJ/logs/$(date '+%Y%m%d-%H%M%S')-$TEST.log"
+LOG="$PROJ/logs/$(date '+%Y%m%d-%H%M%S')-${LANE:-main}-$TEST.log"
 
 echo "==> 启动 QEMU（TCG / cortex-a72 / ${TIMEOUT}s 超时）"
 echo "    串口日志: $LOG"
 
+# QEMU 参数说明：
+#   -accel tcg,thread=multi 强制 MTTCG：多个 vCPU 真正并行执行。
+#     为什么要显式指定：默认 TCG 可能是"轮转切换"模型（同一时刻只有一个 vCPU 在跑）。
+#     实测证据：quick 模式 shm_seq_changes=300（读到 300 次序号变化）但 shm_seq_odd_seen=0
+#     （从未撞上 1ms 写入窗口）—— 只有串行执行才会出现这种组合。
+#     本项目的"并发无竞态"结论依赖真实并行，所以必须开 MTTCG。
+#   -smp 2：单核下所有 SMP 竞态不可触发（阶段 03 验证报告 S2）。
 qemu-system-aarch64 \
-    -M virt -cpu cortex-a72 -accel tcg -m 1G -display none -serial stdio \
+    -M virt -cpu cortex-a72 -accel tcg,thread=multi -smp 2 -m 1G -display none -serial stdio \
     -dtb "$DTB" -kernel "$IMAGE" -initrd "$INITRD" \
     -append "console=ttyAMA0 test=$TEST" > "$LOG" 2>&1 &
 QPID=$!

@@ -198,18 +198,25 @@ int __i2c_transfer(struct i2c_adapter *adap, struct i2c_msg *msgs, int num)
 
 **代价必须知道**：这样做的 adapter **不支持 I2C 消息层**。实测证据：
 用 `i2c_smbus_read_word_data` 走 `smbus_xfer` 一切正常（`logs/20260914-040921-02-i2c-driver.log:279`
-的 `registers 前几行：0: 0181 1: 0fa1 2: 0000`）；调 `i2c_transfer()` 会返回
+的 `registers 前几行：0: 0181 1: 0fa1 2: 0000`；**阶段 02 整改后更新**：该日志取自整改前，
+当时 probe 写 CONFIG=0x0000，整改后同一位置读到 `2: 0001`，实证见
+`logs/20260914-104902-02-i2c-driver.log:280`）；调 `i2c_transfer()` 会返回
 `-EOPNOTSUPP`（源码路径 `drivers/i2c/i2c-core-base.c:2264`，本项目未单独构造该调用，
 标注**未验证**）。
 
 ### 1.5 `functionality`：能力声明，声明错就换错路
 
 ```c
-/* driver/virt_i2c.c:212 */
+/* driver/virt_i2c.c:214-229（阶段 02 整改后更新：已删除多声明的 I2C_FUNC_SMBUS_BYTE） */
 static u32 virt_i2c_functionality(struct i2c_adapter *adap)
 {
-	return I2C_FUNC_SMBUS_BYTE_DATA | I2C_FUNC_SMBUS_WORD_DATA |
-	       I2C_FUNC_SMBUS_BYTE;
+	/*
+	 * 只声明确实实现的能力：本芯片所有访问都带寄存器地址（命令字节），
+	 * 无命令字节的 SMBus Byte 协议（size=I2C_SMBUS_BYTE）在 smbus_xfer 里
+	 * 走 default 分支返回 -EOPNOTSUPP，声明了却不实现属于 over-claim。
+	 * 也不能声明 I2C_FUNC_I2C：那会让 regmap 改走 raw i2c_transfer（需要 master_xfer）。
+	 */
+	return I2C_FUNC_SMBUS_BYTE_DATA | I2C_FUNC_SMBUS_WORD_DATA;
 }
 ```
 
@@ -560,8 +567,9 @@ static const struct regmap_bus *regmap_get_i2c_bus(struct i2c_client *i2c,
 | 5 | 8/8 + `SMBUS_BYTE_DATA` | `regmap_smbus_byte` | `i2c_smbus_read_byte_data()`（`regmap-i2c.c:22`） |
 | — | 都不满足 | `-ENOTSUPP` | `regmap_init` 失败 |
 
-**本项目的落点**：`cfg` 是 16/8，adapter 只声明 `SMBUS_BYTE_DATA|SMBUS_WORD_DATA|SMBUS_BYTE`
-（`driver/virt_i2c.c:212`），因此命中**第 4 行**。
+**本项目的落点**：`cfg` 是 16/8，adapter 只声明 `SMBUS_BYTE_DATA|SMBUS_WORD_DATA`
+（`driver/virt_i2c.c:229`；阶段 02 整改后更新：原先多声明的 `SMBUS_BYTE` 已删除），
+因此命中**第 4 行**。
 完整调用链：
 
 ```text
@@ -691,6 +699,16 @@ temp=2224.062 C
                                                        ↑ 真实 config=0x0001，被交换成 0x0100
 ```
 
+> **阶段 02 整改后更新**：上面这段实测取自**整改前**代码的负控日志
+> （`logs/20260914-040851-zz-kb-probe.log`）——当时 probe 的日志格式与 CONFIG 写入值都还没统一。
+> 整改后（commit `730d0ff`）的当前行为是：
+> `chip detected: config=0x0001 (continuous conversion already enabled)` 与
+> `continuous conversion enabled (config=0x0001)`，regmap debugfs 读回 `2: 0001`
+> （实测 `logs/20260914-104902-02-i2c-driver.log:261-262` 与同日志 `:280`）。
+> **本节结论（regmap 数据字节序必须显式声明）不受影响**：把 `.val_format_endian` 改回 BIG 时，
+> `0: 8101` 与 `temp=2224.062 C` 这两种错误形态依旧会出现（该结论由整改后的复验报告
+> `docs/verify/02-i2c-driver-复验报告.md` 的负控实验再次确认）。
+
 逐条解释：
 
 | 观测 | 解释 |
@@ -811,9 +829,12 @@ sensor0: sensor@48 {
 --- ls /sys/kernel/debug/regmap/0-0048/ ---
 access     name       range      registers
 --- cat name ---      sensor_char
---- cat registers --- 0: 0181 / 1: 0fa1 / 2: 0000
+--- cat registers --- 0: 0181 / 1: 0fa1 / 2: 0001
 --- cat access ---    0: y y y n / 1: y y y n / 2: y y y n
 ```
+
+> **阶段 02 整改后更新**：`2:` 的值取决于 probe 写入的 CONFIG（整改后为 `0x0001`；
+> 整改前是 `0x0000`，见 §3.3.3 与本文件 §F6 相关记录）。实测 `logs/20260914-104902-02-i2c-driver.log:280`。
 
 | 文件 | 生成条件 | 内容 | 源码 |
 |---|---|---|---|
@@ -1129,10 +1150,12 @@ if (chip->injected_left) {
 同一个 debugfs 文件在两个健康度下表现不同：
 
 ```
-注入前:  cat /sys/kernel/debug/regmap/0-0048/registers → 0: 0181  1: 0fa1  2: 0000
+注入前:  cat /sys/kernel/debug/regmap/0-0048/registers → 0: 0181  1: 0fa1  2: 0001
 注入后:  cat /sys/kernel/debug/regmap/0-0048/registers → 0: XXXX  1: XXXX  2: XXXX
 ```
-（`X` 由 `regmap-debugfs.c:255-257` 在 `regmap_read()` 失败时填充。）
+（`X` 由 `regmap-debugfs.c:255-257` 在 `regmap_read()` 失败时填充。
+**阶段 02 整改后更新**：`2:` 为 `0001`，整改前为 `0000`——本示例的重点是注入前后的
+“数值 vs XXXX”对比，与具体数值无关。）
 
 **为什么"注入点是总线层"而不是"驱动层桩函数"**：注入点在 `virt_i2c_smbus_xfer()`
 （`driver/virt_i2c.c:137`），也就是**真实硬件会失败的那一层**。
@@ -1473,7 +1496,7 @@ lrwxrwxrwx ... module -> ../../../../module/sensor_char
 # cat /sys/kernel/debug/regmap/0-0048/registers
 0: 0181
 1: 0fa1
-2: 0000
+2: 0001            ← 阶段 02 整改后更新：probe 写 SENSOR_CFG_CONT_EN=0x0001（整改前为 0000）
 # cat /sys/kernel/debug/regmap/0-0048/access
 0: y y y n
 1: y y y n
@@ -1488,7 +1511,7 @@ lrwxrwxrwx ... module -> ../../../../module/sensor_char
 | `name` = `sensor_char` | = `map->dev->driver->name`（`regmap-debugfs.c:49`），不是设备名 |
 | `0: 0181` | 芯片 `samples=1` → 温度 24100 m°C → `24100*16/1000 = 385 = 0x0181`（`driver/virt_i2c.c:112-121`） |
 | `1: 0fa1` | 湿度 `4000 + (1 % 200) = 4001 = 0x0fa1`（`driver/virt_i2c.c:122`） |
-| `2: 0000` | probe 里写过 `regmap_write(CONFIG, 0x0000)`（`driver/sensor_char.c:631`） |
+| `2: 0001` | probe 里写过 `regmap_write(CONFIG, SENSOR_CFG_CONT_EN = 0x0001)`（`driver/sensor_char.c:863`）。**阶段 02 整改后更新**：整改前写的是 `0x0000`，实测证据见 `logs/20260914-104902-02-i2c-driver.log:280`（`2: 0001`） |
 | `y y y n` | readable/writeable/volatile/precious（`regmap-debugfs.c:443-451`），volatile=y 因为没开 cache（`regmap.c:161`） |
 
 **注意**：`registers` 每读一次就**真的**产生 3 次 I2C 传输（`regmap-debugfs.c:254`）。
@@ -1542,6 +1565,14 @@ bank=0x48 samples=1 temp_raw=0x0181 humidity_raw=4001 config=0x0000
 --- 注入后 virt_i2c/stats ---
 transfers=8 errors=3 injected_left=0 ro_writes=0
 ```
+
+> **阶段 02 整改后更新**：本段实测取自整改前的日志（`logs/20260914-040826-02b-inject-probe.log`），
+> 其中 `config=0x0000` 是当时 probe 写入的值（见上一节的 F6 语义矛盾）。
+> 整改后 probe 写入 `0x0001`（连续转换使能，`logs/20260914-104902-02-i2c-driver.log:262`），
+> 同一组寄存器在 regmap debugfs 里读回 `2: 0001`（同日志 `:280`）。
+> `virt_i2c/stats` 打印的就是这组寄存器数组，因此现在应为 `config=0x0001`
+> （该行本身未在本轮日志中直接观测到——标注为**推导值**，不是实测）。
+> 故障注入的语义（`transfers` 5→8、`errors` 0→3、`injected_left` 3→0）未变。
 
 **可断言的等式**：`transfers` 5→8（+3）、`errors` 0→3、`injected_left` 3→0、
 `registers` 显示 `XXXX`。

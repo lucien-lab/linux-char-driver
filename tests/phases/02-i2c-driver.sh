@@ -21,9 +21,10 @@
 
 info "== 1) 虚拟 I2C 控制器 =="
 dmesg > /tmp/probe.txt 2>/dev/null
-# virt_i2c 用 %pOF 打印的是 chip->adap.dev.of_node（NULL 时打印 <no-node>），
-# 所以这一行能真正证明"用于枚举子节点的那个字段"被设置了；
-# 删掉 virt_i2c.c 里的赋值后本项会失败（负控已实证）。
+# virt_i2c 用 %pOF 打印的是 chip->adap.dev.of_node（NULL 时打印 (null)，实测如此；
+# 注意 of_node_full_name(NULL) 才是返回 <no-node>，%pOF 不走那条路径），
+# 所以这一行能真正证明“用于枚举子节点的那个字段”被设置了；
+# 删掉 virt_i2c.c 里的赋值后本项会失败（负控 NC1 已实证）。
 check_contains "adapter.of_node 已指向设备树节点（枚举子设备的前提）" /tmp/probe.txt "adapter.of_node=/virt-i2c"
 check_exists "故障注入接口 /sys/kernel/debug/virt_i2c/inject_error" /sys/kernel/debug/virt_i2c/inject_error
 check_exists "控制器统计接口 /sys/kernel/debug/virt_i2c/stats" /sys/kernel/debug/virt_i2c/stats

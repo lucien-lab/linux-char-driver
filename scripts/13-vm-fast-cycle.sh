@@ -17,10 +17,13 @@
 # ============================================================================
 set -uo pipefail
 
-PROJ=${PROJ:-/Users/lucien/workspace/self-study/projects/linux-char-driver}
+# PROJ 默认取"脚本自身所在的项目目录"：这样在 git worktree 里执行时会自动指向该 worktree，
+# 而不是硬编码的主树 —— 否则并行 lane 会拿别人的源码构建，产生完全错误的结论（阶段 05 踩过）。
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+PROJ=${PROJ:-$(cd "$SCRIPT_DIR/.." && pwd)}
 KVER=${KVER:-6.6.156}
 KSRC="$HOME/kernel-build/linux-$KVER"
-LAB="$HOME/lab"
+LAB="$HOME/lab-${LANE:-main}"
 OUT="$LAB/out"
 TEST=${TEST:-smoke}
 
@@ -139,10 +142,41 @@ mkdir -p "$ROOTFS/tests/phases"
 cp "$LAB"/tests/phases/*.sh "$ROOTFS/tests/phases/" 2>/dev/null
 # 阶段级模块清单也一并带上（如 IIO 阶段只加载 virt_i2c + sensor_iio）
 cp "$LAB"/tests/phases/*.modules "$ROOTFS/tests/phases/" 2>/dev/null
-# 被选中阶段若有专属模块清单，用它覆盖默认值
-if [ -f "$LAB/tests/phases/$TEST.modules" ]; then
-    cp "$LAB/tests/phases/$TEST.modules" "$ROOTFS/etc/modules.load"
-    echo "  阶段专属模块清单: $TEST.modules"
+
+# ---------------------------------------------------------------------------
+# 模块清单同样要"运行时可选"，否则会出现一类很难查的假结论：
+#   initramfs 是构建期把 /etc/modules.load 烤进去的。
+#   如果构建时用的是某个阶段的专属清单（例如 IIO 阶段只加载 virt_i2c+sensor_iio），
+#   那么同一份产物去跑 smoke 回归时 sensor_char.ko 根本没被 insmod，
+#   smoke 会大面积 FAIL —— 看起来像"回归被改坏了"，实际是清单不匹配。
+#   做法：把默认清单与每个阶段的专属清单都放进 /etc/modules/，
+#         由 init.sh 按内核命令行 test=<阶段> 选择同名清单。
+# ---------------------------------------------------------------------------
+mkdir -p "$ROOTFS/etc/modules"
+if [ -f "$LAB/driver/modules.load" ]; then
+    grep -v '^[[:space:]]*#' "$LAB/driver/modules.load" | grep -v '^[[:space:]]*$' \
+        > "$ROOTFS/etc/modules/default.load"
+else
+    printf 'i2c-stub.ko chip_addr=0x48\n' > "$ROOTFS/etc/modules/default.load"
+    for ko in "$LAB"/driver/*.ko; do echo "$(basename "$ko")" >> "$ROOTFS/etc/modules/default.load"; done
+fi
+for f in "$LAB"/tests/phases/*.modules; do
+    [ -f "$f" ] || continue
+    grep -v '^[[:space:]]*#' "$f" | grep -v '^[[:space:]]*$' \
+        > "$ROOTFS/etc/modules/$(basename "${f%.modules}").load"
+done
+echo "  可用模块清单（/etc/modules/）："
+ls "$ROOTFS/etc/modules/" | sed 's/^/    /'
+
+# /etc/modules.load 必须始终是"默认清单"：阶段专属清单只在 init.sh 里按 test= 选择。
+# 否则构建时用的阶段清单会被当成默认值，导致同一份产物跑 smoke 回归时缺驱动
+# （sensor_char.ko 没被 insmod → smoke 大面积 FAIL，看起来像回归被改坏）。
+cp "$ROOTFS/etc/modules/default.load" "$ROOTFS/etc/modules.load"
+echo "  默认模块清单已重置为 default.load"
+
+# 内核树里的模块（如 i2c-stub）只要被任一清单引用就要打包
+if grep -lq '^i2c-stub\.ko' "$ROOTFS"/etc/modules/*.load "$ROOTFS/etc/modules.load" 2>/dev/null; then
+    cp "$KSRC/drivers/i2c/i2c-stub.ko" "$ROOTFS/lib/modules/$KVER/" 2>/dev/null
 fi
 for f in "$ROOTFS"/tests/phases/*.sh; do
     [ -f "$f" ] || continue

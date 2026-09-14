@@ -61,7 +61,14 @@ echo "============================================================"
 #   /etc/modules.load 每行格式：  <模块文件名> [模块参数...]
 #   顺序由构建脚本决定：i2c-stub(虚拟 I2C 总线) -> 传感器驱动
 # ---------------------------------------------------------------------------
-if [ -f /etc/modules.load ]; then
+# 模块清单选择：/etc/modules/<阶段名>.load 优先（构建脚本按阶段打包），
+# 没有对应清单时回退到 /etc/modules.load（默认清单）。
+MODLIST=/etc/modules.load
+if [ -f "/etc/modules/$TEST_NAME.load" ]; then
+    MODLIST="/etc/modules/$TEST_NAME.load"
+fi
+echo "--- 模块清单: $MODLIST ---"
+if [ -f "$MODLIST" ]; then
     while read -r line; do
         [ -n "$line" ] || continue
         case "$line" in \#*) continue ;; esac
@@ -80,7 +87,7 @@ if [ -f /etc/modules.load ]; then
         if [ $? -ne 0 ]; then
             fail "insmod $mod" "insmod 返回非 0（模块缺失或参数错误）"
         fi
-    done < /etc/modules.load
+    done < "$MODLIST"
 fi
 
 # ---------------------------------------------------------------------------

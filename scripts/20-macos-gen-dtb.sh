@@ -25,7 +25,7 @@ command -v dtc >/dev/null || { echo "缺少 dtc：brew install dtc"; exit 1; }
 command -v qemu-system-aarch64 >/dev/null || { echo "缺少 qemu-system-aarch64：brew install qemu"; exit 1; }
 
 echo "==> [1/4] dump QEMU virt 平台设备树"
-qemu-system-aarch64 -M virt,dumpdtb="$TMP/virt.dtb" -m 1G -display none -serial null -S >/dev/null 2>&1 || true
+qemu-system-aarch64 -M virt,dumpdtb="$TMP/virt.dtb" -smp 2 -m 1G -display none -serial null -S >/dev/null 2>&1 || true
 [ -f "$TMP/virt.dtb" ] || { echo "dumpdtb 失败"; exit 1; }
 
 echo "==> [2/4] 反编译 dtb -> dts"

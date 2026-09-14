@@ -11,7 +11,8 @@
  *
  * 用法：/bin/sensor_stat [设备路径]     默认 /dev/sensor0
  * 输出：一行可解析文本
- *   [STAT] open=N read=N irq=N i2c_err=N interval=N
+ *   [STAT] open=N read=N irq=N i2c_err=N interval=N ring_count=N dropped=N
+ *   （ring_count/dropped 为阶段 03 新增的环形缓冲统计）
  */
 #include <stdio.h>
 #include <fcntl.h>
@@ -38,9 +39,10 @@ int main(int argc, char **argv)
 		return 1;
 	}
 
-	printf("[STAT] open=%u read=%u irq=%u i2c_err=%u interval=%u\n",
+	printf("[STAT] open=%u read=%u irq=%u i2c_err=%u interval=%u ring_count=%u ring_capacity=%u dropped=%u\n",
 	       st.open_count, st.read_count, st.irq_count,
-	       st.i2c_errors, st.interval_ms);
+	       st.i2c_errors, st.interval_ms,
+	       st.ring_count, st.ring_capacity, st.kfifo_dropped);
 
 	close(fd);
 	return 0;

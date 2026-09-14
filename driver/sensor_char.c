@@ -18,8 +18,24 @@
  *              ├── 上半部(hard IRQ)：只做最少的事，返回 IRQ_WAKE_THREAD
  *              └── 线程化下半部：可以做 I2C 传输（允许睡眠），读传感器并唤醒读进程
  *
- *   [数据通路]
- *     传感器寄存器 --I2C--> 线程化中断处理 --> 内核缓存 + waitqueue --> read()/ioctl()
+ *   [数据通路 —— 阶段 03 起是"一个生产者、两个出口"]
+ *     传感器寄存器 --I2C--> 线程化中断处理（唯一生产者）
+ *        ├── kfifo 环形缓冲（64 个样本）--waitqueue--> read()/poll()/epoll/SIGIO
+ *        └── mmap 共享页（seqlock 保护）----------> 用户态直接读（零拷贝）
+ *     另外保留 latest（最新一个样本）供 ioctl(GET_SAMPLE) 立即取值。
+ *
+ *     为什么要有环形缓冲：采样由硬件节奏驱动（每 interval_ms 一个样本），
+ *     而读进程的节奏由应用决定（可能几秒读一次，也可能一直不读）。
+ *     没有缓冲时只能"用最新值覆盖旧值"，中间采样点会静默丢失；
+ *     有了 kfifo，读进程可以事后补读，直到缓冲被填满为止。
+ *
+ *     【溢出策略：丢新不丢旧】kfifo 满时丢弃刚产生的新样本并累加 kfifo_dropped，
+ *     而不是覆盖最旧的样本。理由：
+ *       1) 已排队的数据是"用户态还欠着没读的历史"，静默改写历史比丢新更难排查；
+ *       2) 计数（kfifo_dropped）让"丢了多少"变成可观测量，而不是无声无息；
+ *       3) 传感器数据通常是时序敏感的，保留更早的时间序列比保留最新点更有价值。
+ *     代价是最新样本可能进不了队列——但它仍然能在 latest/共享区里看到，
+ *     所以"最新值"这条路径不受影响。
  *
  *   [用户态接口：四种 IO 模型]
  *     阻塞 read / 非阻塞(O_NONBLOCK) read / poll-select-epoll / fasync+SIGIO
@@ -52,6 +68,10 @@
 #include <linux/wait.h>
 #include <linux/poll.h>		/* poll_wait / fasync_helper / kill_fasync */
 #include <linux/jiffies.h>
+#include <linux/kfifo.h>		/* 采样环形缓冲 */
+#include <linux/mm.h>			/* remap_pfn_range / __get_free_pages / VM_* 标志 */
+#include <linux/seqlock.h>		/* mmap 共享区的读写一致性（内核侧参考实现） */
+#include <linux/delay.h>		/* udelay：共享区写入窗口的测试放大器 */
 #include <linux/i2c.h>
 #include <linux/regmap.h>
 #include <linux/of.h>
@@ -79,6 +99,17 @@
 /* 阻塞 read() 等待新样本的最长时间：超时返回 -ETIMEDOUT，避免用户态永久卡死 */
 #define SENSOR_READ_TIMEOUT_MS	2000
 
+/* 环形缓冲容量（样本个数）：64 个样本足以覆盖"应用偶发几秒不读"的场景，
+ * 同时在 QEMU 里跑溢出测试时只需短时间不读就能填满（10ms 周期 → 0.7 秒）。 */
+#define SENSOR_RING_SAMPLES	64
+
+/* 共享区布局（struct sensor_shm、SENSOR_SHM_MAGIC/VERSION/SAMPLES）
+ * 定义在同一份 header 里，用户态测试程序按同样布局解析，避免两边漂移。 */
+
+/* 共享区必须能放进一页：.mmap 只映射一页，放不下就意味着用户态会映射到不完整的数据 */
+static_assert(sizeof(struct sensor_shm) <= PAGE_SIZE,
+	      "sensor_shm 必须能放进一页（mmap 只映射一页）");
+
 /*
  * 传感器寄存器原始值 -> 毫摄氏度：LSB = 1/16 °C = 62.5 m°C。
  * 必须先转成有符号 16 位再乘：寄存器在负温时是二进制补码形式，
@@ -103,11 +134,33 @@ struct sensor_dev {
 	struct hrtimer		timer;		/* 周期性触发虚拟中断 */
 
 	/* 数据与同步 */
-	struct mutex		lock;		/* 保护 latest/stats 与 I2C 访问 */
+	struct mutex		lock;		/* 保护 latest/stats/共享区元数据与 I2C 访问 */
 	wait_queue_head_t	wq;		/* read()/poll() 阻塞队列 */
 	struct fasync_struct	*fasync;	/* 注册了 O_ASYNC 的进程链表（SIGIO 通知用） */
-	struct sensor_sample	latest;
+	struct sensor_sample	latest;		/* 最新一个样本（ioctl 立即取值用） */
 	unsigned long		interval_ms;
+
+	/* 采样环形缓冲：read() 的数据源（阶段 03） */
+	struct kfifo		ring;
+	spinlock_t		ring_lock;	/* 保护 kfifo 的读写，见 read() 里的说明 */
+	u32			kfifo_dropped;	/* 队满而丢弃的新样本数 */
+
+	/* mmap 共享区：一页，只读映射给用户态（阶段 03） */
+	struct sensor_shm	*shm;
+	unsigned long		shm_addr;	/* __get_free_pages 返回的地址（释放时要用） */
+	/*
+	 * 共享区写侧的串行化锁。
+	 *
+	 * 注意：这里用的是普通 spinlock_t，而不是 seqlock_t。
+	 * 原因：seqlock_t 的序号计在它自己的 seqcount 里（结构体私有内存），
+	 * 用户态 mmap 到的那一页根本看不到它，于是"内核用了 seqlock"
+	 * 对用户态读者毫无意义——这是本阶段真实踩过的坑（初版就是这么写的，
+	 * 用户态的重试逻辑成了死代码）。正确做法是在共享区里亲手维护
+	 * 用户可见的 seq 字段，见 sensor_shm_publish()。
+	 */
+	spinlock_t		shm_lock;
+	u32			shm_writes;	/* 共享区发布次数（debugfs/证据用） */
+	unsigned int		shm_publish_delay_us;	/* 测试用：放大写入窗口，默认 0 */
 
 	u32			open_count;
 	u32			read_count;
@@ -116,24 +169,43 @@ struct sensor_dev {
 };
 
 /*
- * per-open 上下文：每个 open() 出来的文件描述符各自记录"已经消费到哪个样本"。
+ * per-open 上下文说明（阶段 01 引入，阶段 03 退役）：
  *
- * 为什么必须 per-open 而不是用全局的 latest.seq？
- *   poll() 的语义是"调用者现在能不能无阻塞地读到数据"。如果拿全局最新序号判断，
- *   同一个样本被读走之后 poll 仍然回报可读 → epoll/select 立即返回 → 用户态
- *   反复空转（忙轮询），CPU 打满。把基准放到 open 上下文，"样本被消费"才是
- *   相对该 fd 成立的事实，poll 才能保持正确的电平触发语义。
- * 顺带好处：多个进程各自 open 时互不干扰，这也是多进程并发读的基础。
+ *   阶段 01 为了让 poll() 具备正确的电平语义，引入了 struct sensor_file，
+ *   用"本 fd 已消费到哪个序号（last_seq）"判断可读性。
+ *
+ *   阶段 03 引入 kfifo 之后它不再需要了："还有没有新样本"这个问题现在由
+ *   共享队列是否非空唯一回答 —— 消费就是出队，队列空就是没有数据。
+ *   这个判定天然与 read() 一致（read 出队失败即 EAGAIN/阻塞），
+ *   因此 poll 不会再出现"报告可读但 read 却阻塞"的不一致：
+ *   如果还要保留 per-fd 的 last_seq，就会在多进程并发时出现这种矛盾
+ *   （A 进程读走了样本，B 进程的 last_seq 没跟上 → B 的 poll 报可读、read 却拿不到）。
+ *
+ *   代价是语义变化：一个刚打开的 fd 只有在"缓冲里确实还有未读样本"时才立刻可读，
+ *   而不是"设备曾经产生过样本就永远立即可读"。这是队列语义的正常结果，
+ *   阶段 01 测试里对应的前置条件也据此调整（见 user/io_models_test.c）。
  */
-struct sensor_file {
-	struct sensor_dev	*sd;
-	u32			last_seq;	/* 本 fd 已经消费到的样本序号 */
-};
 
 static struct class *sensor_class;
 static int sensor_major;			/* 0 = 动态分配主设备号 */
 module_param(sensor_major, int, 0444);
 MODULE_PARM_DESC(sensor_major, "固定主设备号，0 表示动态分配");
+
+/*
+ * 共享区写入窗口的测试放大器（微秒），默认 0 = 关闭。
+ *
+ * 为什么需要它：正常写入窗口只有 ~1µs，而采样周期是 10ms 量级，
+ * 读者撞上"写入中"的概率约 10⁻⁴ —— 意味着“seqlock 是否真的生效”
+ * 在自然条件下几乎观测不到（正向证据拿不到，检查项也就无法被验证）。
+ * 打开后写入窗口被拉长到数百微秒：
+ *   - 正确实现：读者重试次数 > 0 且数据始终一致（协议生效）；
+ *   - 破坏实现（不写 seq / 少写屏障）：读者会拿到撕裂数据（检查项报错）。
+ * 只在测试脚本里通过 insmod 参数打开，正式运行保持 0。
+ */
+static unsigned int shm_publish_delay_us;
+module_param(shm_publish_delay_us, uint, 0444);
+MODULE_PARM_DESC(shm_publish_delay_us,
+		 "调试用：在共享区写入窗口内插入延迟(µs)，放大撕裂读概率，默认 0");
 
 /* 把样本格式化成一行文本，便于 cat /dev/sensor0 直接观察 */
 static int format_sample(char *buf, size_t size, const struct sensor_sample *s)
@@ -184,12 +256,87 @@ static irqreturn_t sensor_irq_hard(int irq, void *data)
 }
 
 /*
+ * 把样本投递到 mmap 共享区 —— 用户态可见的 seqlock 协议。
+ *
+ * ============================ 协议 ============================
+ *   seq 为奇数 = 正在写入；seq 为偶数 = 共享区内容一致，可放心读取。
+ *
+ *   写方（本函数）：           读方（用户态 shm_snapshot）：
+ *     seq++（→ 奇数）            s1 = seq
+ *     smp_wmb()                  （s1 为奇数 → 重试）
+ *     写 header 与 samples[]     读 header 与 samples[]
+ *     [可选 udelay 放大器]        s2 = seq
+ *     smp_wmb()                  若 s1 != s2 → 重试
+ *     seq++（→ 偶数）            否则本次数据一致
+ *
+ * 两侧的写屏障顺序与内核 raw_write_seqcount_begin/end()（include/linux/seqlock.h）
+ * 完全一致：begin 是"先置奇、再屏障"，end 是"先屏障、再置偶"。
+ * 少任何一个屏障，读者都可能拿到"seq 检查通过、但数据其实是旧的/写了一半"的结果——
+ * 这种错误不崩溃、不报错，只会静默给出错位数据，只能靠屏障从根上避免。
+ *
+ * ============================ 为什么不能只用 seqlock_t ============================
+ *   seqlock_t 的序号在 sd->shm_lock 的私有内存里，用户态 mmap 看不到；
+ *   只在内核侧用 write_seqlock() 只能保证"内核写者之间互斥"，
+ *   对用户态读者没有任何可观测的一致性信号。所以必须在共享区里
+ *   亲手维护 seq，并且只有这个 seq 才是与用户态的契约。
+ *
+ * ============================ 锁与上下文 ============================
+ *   spinlock：调用者（线程化中断下半部）可以睡眠，但共享区写入极短
+ *   （一条样本 24 字节），用自旋锁更简单也更直观；同时它天然阻止了
+ *   "RESET 与发布并发"造成的窗口错乱。
+ *   本函数在中断线程上下文调用，所以只能用它不睡眠的原语。
+ *
+ * ============================ 测试放大器 ============================
+ *   shm_publish_delay_us（模块参数，默认 0）在奇数窗口内插入 udelay，
+ *   把"写入中"的窗口从 ~1µs 放大到数百 µs。
+ *   用途：正常写窗口只占采样周期的 10⁻⁴ 量级，读者几乎不可能自然撞上，
+ *   于是"seqlock 到底管不管用"无法被观测。放大后：
+ *     - 好实现：读者重试次数 > 0，且 invalid 始终为 0（证明协议真的生效）；
+ *     - 坏实现：读者会读到撕裂数据，invalid > 0（证明检查项有判别力）。
+ *   这是"受控放大器"验证法，只在测试时由测试脚本 insmod 参数打开。
+ */
+static void sensor_shm_publish(struct sensor_dev *sd, const struct sensor_sample *s)
+{
+	struct sensor_shm *shm = sd->shm;
+	u32 seq;
+
+	if (!shm)
+		return;
+
+	spin_lock(&sd->shm_lock);
+
+	seq = READ_ONCE(shm->seq) + 1;
+	WRITE_ONCE(shm->seq, seq);	/* → 奇数：写入中 */
+	smp_wmb();			/* 与 raw_write_seqcount_begin() 一致 */
+
+	/*
+	 * 注意：先置奇再写数据。若反过来（先写数据再置奇），
+	 * 读方可能恰好落在"数据已变、seq 仍是偶"的窗口里，直接采信错误数据。
+	 */
+	if (sd->shm_publish_delay_us)
+		udelay(sd->shm_publish_delay_us);
+
+	shm->samples[shm->write_idx] = *s;
+	shm->write_idx = (shm->write_idx + 1) % SENSOR_SHM_SAMPLES;
+	if (shm->count < SENSOR_SHM_SAMPLES)
+		shm->count++;
+
+	smp_wmb();			/* 与 raw_write_seqcount_end() 一致 */
+	WRITE_ONCE(shm->seq, seq + 1);	/* → 偶数：一致 */
+
+	sd->shm_writes++;
+
+	spin_unlock(&sd->shm_lock);
+}
+
+/*
  * 下半部（内核线程上下文）：这里才允许睡眠，做 I2C 读。
  * 真机上同样结构：threaded IRQ 里读传感器寄存器。
  */
 static irqreturn_t sensor_irq_thread(int irq, void *data)
 {
 	struct sensor_dev *sd = data;
+	struct sensor_sample sample;
 	unsigned int raw;
 	s32 next;
 	int ret;
@@ -218,16 +365,41 @@ static irqreturn_t sensor_irq_thread(int irq, void *data)
 	 */
 	next = RAW_TO_MILLI(raw);
 
-	sd->latest.seq++;
-	sd->latest.temp_milli = next;
-	sd->latest.irq_count = sd->irq_count;
-	sd->latest.ts_ns = ktime_get_ns();
+	/*
+	 * 注意：sd->lock 在本函数入口已经持有，从 regmap_read 到样本入队、
+	 * 共享区发布为止都在同一个临界区里，这里不要再加锁
+	 * （mutex 不可重入，重复加锁会直接死锁 —— 本阶段真实踩过这个坑）。
+	 */
+	sample.seq = sd->latest.seq + 1;
+	sample.temp_milli = next;
+	sample.irq_count = sd->irq_count;
+	sample.ts_ns = ktime_get_ns();
+	sd->latest = sample;
+
+	/*
+	 * 出口 1：环形缓冲（read/poll/epoll/SIGIO 的数据源）。
+	 *
+	 * 用 kfifo_in_spinlocked 而不是 kfifo_put：kfifo 的免锁性质只对
+	 * "单生产者 + 单消费者"成立；本设备允许多个进程各自 open 后同时 read()，
+	 * 多读者必须串行化，否则 in/out 索引会互相覆盖。
+	 *   返回值 = 实际写入字节数；不满一条样本（即队列已满）= 0，
+	 *   此时丢弃新样本并计数（丢弃策略见文件头说明）。
+	 */
+	if (kfifo_in_spinlocked(&sd->ring, &sample, sizeof(sample),
+				&sd->ring_lock) != sizeof(sample))
+		sd->kfifo_dropped++;
+
+	/* 出口 2：mmap 共享区（零拷贝通道） */
+	sensor_shm_publish(sd, &sample);
 
 	mutex_unlock(&sd->lock);
 
 	/*
 	 * 唤醒阻塞在 read() 里的进程。
-	 * 注意：waitqueue 的唤醒放在锁外，避免"唤醒后马上又抢不到锁"的惊群效应。
+	 * 必须放在"样本已入队"之后：wait_event 的条件是"队列非空"，
+	 * 先改状态再唤醒才能避免丢唤醒（wake_up 之后才入队会出现
+	 * "被唤醒但发现队列为空 → 又睡回去"的假唤醒循环）。
+	 * 唤醒本身放在锁外，避免"唤醒后马上又抢不到锁"的惊群效应。
 	 */
 	wake_up_interruptible(&sd->wq);
 
@@ -265,30 +437,59 @@ static enum hrtimer_restart sensor_timer_fn(struct hrtimer *timer)
 /* ============================ 字符设备接口 ============================ */
 
 /*
- * 数据可用性判定：read()、poll() 共用同一个函数，避免两条路径的语义漂移。
- * 判定基准是本 fd 的 last_seq（而不是进入函数那一刻的全局序号），
- * 因此"有没有新样本"对每个 open 的文件描述符是独立成立的。
+ * 数据可用性判定：read()、poll() 共用同一个判定，避免两条路径的语义漂移。
+ *
+ * 判定依据是"环形缓冲里还有没有未消费的样本"——这是唯一与 read() 完全一致的
+ * 事实：read() 取不到数据就说明没有新样本。因此 poll() 不会出现
+ * "报告可读但 read 却阻塞"的矛盾。
+ * （阶段 01 曾用 per-fd 的 last_seq 判断，但那在"多进程共享同一队列"时会打架：
+ *   A 读走样本后 B 的 last_seq 不会跟着变，B 的 poll 就会谎报可读。）
+ *
+ * 这里不加锁：kfifo 的 in/out 索引是整字读取，kfifo 内部用 smp_wmb() 保证
+ * "数据先于索引对读者可见"，所以免锁读不会读到未写入的数据。这也是
+ * wait_event 的条件表达式必须"无副作用、可重复求值"的直接体现。
  */
-static bool sensor_has_new_sample(struct sensor_file *sf)
+static bool sensor_has_new_sample(struct sensor_dev *sd)
 {
-	return READ_ONCE(sf->sd->latest.seq) != sf->last_seq;
+	/*
+	 * 无锁读 kfifo 索引是**有意为之的良性数据竞争**：
+	 *   - in/out 是整字量，读到的值可能瞬时不一致（写方正在改）；
+	 *   - 但这里的用途只是"先生成等待条件，再去睡"，醒来后 wait_event 会重新求值，
+	 *     瞬时不一致最多导致多睡/少睡一次，不会造成数据错误。
+	 * 所以不需要加锁；但注释必须说清楚这是良性的，而不是无意漏锁
+	 * （KCSAN 会对这类访问报 data race，属于预期噪声，见实现文档"并发证据等级"一节）。
+	 */
+	return !kfifo_is_empty(&sd->ring);
+}
+
+/* 环形缓冲的实际容量（样本数）。
+ * 注意：kfifo_alloc 会把字节容量向上取整到 2 的幂，所以实际能放的样本数
+ * 往往比请求的多（例如请求 64×24=1536 字节 → 实际 2048 字节 → 85 个样本）。
+ * 这个换算必须暴露出来，否则用户态拿到的是"字节数"而不是"样本数"。 */
+static unsigned int sensor_ring_capacity(struct sensor_dev *sd)
+{
+	return kfifo_size(&sd->ring) / sizeof(struct sensor_sample);
+}
+
+/* 当前已缓冲但未被读走的样本数 */
+static unsigned int sensor_ring_count(struct sensor_dev *sd)
+{
+	/* 同 sensor_has_new_sample()：无锁读索引是良性的，仅供统计展示 */
+	return kfifo_len(&sd->ring) / sizeof(struct sensor_sample);
 }
 
 /* 前向声明：release() 里要摘除异步通知，而 sensor_fasync 定义在后面 */
 static int sensor_fasync(int fd, struct file *file, int on);
 
+/*
+ * open()：只记录私有数据、累计打开次数，不再分配任何 per-open 状态。
+ * （阶段 01 的 struct sensor_file 在阶段 03 退役：可读性由共享队列决定。）
+ */
 static int sensor_open(struct inode *inode, struct file *file)
 {
 	struct sensor_dev *sd = container_of(inode->i_cdev, struct sensor_dev, cdev);
-	struct sensor_file *sf;
 
-	sf = kzalloc(sizeof(*sf), GFP_KERNEL);
-	if (!sf)
-		return -ENOMEM;
-
-	sf->sd = sd;
-	sf->last_seq = 0;	/* 新打开的 fd 认为"什么都还没读过"，首次 read 立即可返回 */
-	file->private_data = sf;
+	file->private_data = sd;
 
 	mutex_lock(&sd->lock);
 	sd->open_count++;
@@ -299,17 +500,14 @@ static int sensor_open(struct inode *inode, struct file *file)
 
 static int sensor_release(struct inode *inode, struct file *file)
 {
-	struct sensor_file *sf = file->private_data;
-	struct sensor_dev *sd = sf->sd;
+	struct sensor_dev *sd = file->private_data;
 
 	/*
-	 * 摘除异步通知。必须先做、且必须在 kfree(sf) 之前：
-	 * fasync_helper(..., 0, ...) 内部会遍历 fasync 链表并把本 file 摘掉，
-	 * 它通过 filp->private_data 找驱动私有数据，释放后就变成 use-after-free。
+	 * 摘除异步通知：fasync_helper(..., 0, ...) 会遍历 fasync 链表把本 file 摘掉。
+	 * 显式调用（而不是依赖 close 的隐式清理）保证"注册-摘除"严格配对。
 	 */
 	sensor_fasync(-1, file, 0);
 
-	kfree(sf);
 	file->private_data = NULL;
 	dev_info(&sd->client->dev, "closed\n");
 	return 0;
@@ -326,27 +524,48 @@ static int sensor_release(struct inode *inode, struct file *file)
  * 注意 O_NONBLOCK 是由调用者通过 open/fcntl 设置的标志，驱动只负责遵循它；
  * 真正的"阻塞/不阻塞"行为发生在驱动里的等待，VFS 不会替驱动决定。
  */
+/*
+ * read(): 从环形缓冲取一个样本，格式化后返回一行文本。
+ *   cat /dev/sensor0 可以持续看到数据流；行为与传感器驱动常见的字符接口一致。
+ *
+ * 四种 IO 模型里，这里承担"阻塞"与"非阻塞"两种：
+ *   阻塞   ：队列空时睡在 sd->wq 上，被生产者（线程化中断下半部）唤醒；
+ *            超时（SENSOR_READ_TIMEOUT_MS）返回 -ETIMEDOUT
+ *   非阻塞 ：O_NONBLOCK 下队列空立刻返回 -EAGAIN
+ *
+ * 为什么用 for(;;) 重试而不是"判断一次就取"：
+ *   多个进程共享同一个队列，被唤醒后可能已被别的进程抢先取走（惊群）。
+ *   取不到就回到等待（或返回 EAGAIN），语义始终自洽。
+ *
+ * 为什么 kfifo 访问要加锁：
+ *   kfifo 的免锁性质只覆盖"单读者 + 单写者"；本设备允许多进程并发 open/read，
+ *   多读者必须串行化，否则 out 索引会互相覆盖、导致数据错乱。
+ *   （生产者侧同样用 ring_lock，所以"多读者 + 单写者"整体是安全的。）
+ */
 static ssize_t sensor_read(struct file *file, char __user *ubuf,
 			   size_t count, loff_t *ppos)
 {
-	struct sensor_file *sf = file->private_data;
-	struct sensor_dev *sd = sf->sd;
+	struct sensor_dev *sd = file->private_data;
 	struct sensor_sample snap;
 	char kbuf[96];
 	int len, ret;
 
-	if (!sensor_has_new_sample(sf)) {
+	for (;;) {
+		/* 出队：返回值 = 实际读出的字节数，0 表示队列为空 */
+		if (kfifo_out_spinlocked(&sd->ring, &snap, sizeof(snap),
+					 &sd->ring_lock) == sizeof(snap))
+			break;
+
 		if (file->f_flags & O_NONBLOCK)
 			return -EAGAIN;
 
 		/*
-		 * 等待新样本。wait_event_* 宏内部是"先判断条件再睡"的循环，
-		 * 并且把条件判断放在自旋锁保护的临界区里，因此不会出现
-		 * "条件刚成立、唤醒已发出"的丢唤醒问题，无需手工加锁。
+		 * 等待新样本。wait_event_* 是"先登记等待项、再求值条件"的循环，
+		 * 生产者是"先入队、再 wake_up"，两者配合不会丢唤醒。
 		 * 超时返回 0（不是错误码），<0 表示被信号打断。
 		 */
 		ret = wait_event_interruptible_timeout(
-			sd->wq, sensor_has_new_sample(sf),
+			sd->wq, sensor_has_new_sample(sd),
 			msecs_to_jiffies(SENSOR_READ_TIMEOUT_MS));
 		if (ret == 0)
 			return -ETIMEDOUT;
@@ -355,8 +574,6 @@ static ssize_t sensor_read(struct file *file, char __user *ubuf,
 	}
 
 	mutex_lock(&sd->lock);
-	snap = sd->latest;
-	sf->last_seq = snap.seq;	/* 记录"已消费"，poll 之后才会重新报告可读 */
 	sd->read_count++;
 	mutex_unlock(&sd->lock);
 
@@ -364,8 +581,17 @@ static ssize_t sensor_read(struct file *file, char __user *ubuf,
 	if (count < len)
 		len = count;
 
-	if (copy_to_user(ubuf, kbuf, len))
+	if (copy_to_user(ubuf, kbuf, len)) {
+		/*
+		 * 拷贝失败时把样本放回队列尾部，而不是默默丢掉：
+		 * kfifo_out 已经把样本取走了，若直接返回 -EFAULT，这个样本就
+		 * 凭空消失且不计入 kfifo_dropped —— 统计与实际不符（"样本无声蒸发"），
+		 * 而 ring_count + kfifo_dropped == irq_count 这个守恒不变量正好能抓住它。
+		 * 放回尾部会让顺序略有变化（该样本变成最新），但比丢掉更容易用。
+		 */
+		kfifo_in_spinlocked(&sd->ring, &snap, sizeof(snap), &sd->ring_lock);
 		return -EFAULT;
+	}
 
 	return len;
 }
@@ -382,13 +608,25 @@ static ssize_t sensor_read(struct file *file, char __user *ubuf,
  * 重新回答，所以消费掉样本后自然不再上报 EPOLLIN。边沿触发的行为由 epoll 在
  * 用户态接口层面实现，驱动不需要也不应该感知。
  */
+/*
+ * poll(): 支持 select/poll/epoll 多路复用。
+ *
+ * 两件事，顺序不能反：
+ *   1. poll_wait()：把本文件的等待项挂到 sd->wq 上（只登记，不睡眠；真正睡眠
+ *      由调用方 poll/epoll_wait 系统调用负责）。驱动不需要持有锁，也不该持锁。
+ *   2. 返回当前的可用性掩码：队列非空就 EPOLLIN，否则 0。
+ *
+ * 这里只实现"电平触发"语义（驱动唯一应该做的）：每次调用都基于当前状态重新
+ * 回答，样本被读走（队列变空）后自然不再上报 EPOLLIN。边沿触发由 epoll 在
+ * 用户态接口层面实现，驱动不需要也不应该感知。
+ */
 static __poll_t sensor_poll(struct file *file, poll_table *wait)
 {
-	struct sensor_file *sf = file->private_data;
+	struct sensor_dev *sd = file->private_data;
 
-	poll_wait(file, &sf->sd->wq, wait);
+	poll_wait(file, &sd->wq, wait);
 
-	if (sensor_has_new_sample(sf))
+	if (sensor_has_new_sample(sd))
 		return EPOLLIN | EPOLLRDNORM;
 
 	return 0;
@@ -404,17 +642,71 @@ static __poll_t sensor_poll(struct file *file, poll_table *wait)
  */
 static int sensor_fasync(int fd, struct file *file, int on)
 {
-	struct sensor_file *sf = file->private_data;
+	struct sensor_dev *sd = file->private_data;
 
-	return fasync_helper(fd, file, on, &sf->sd->fasync);
+	return fasync_helper(fd, file, on, &sd->fasync);
+}
+
+/*
+ * mmap(): 把内核里的共享页映射到用户态，实现"零拷贝"读。
+ *
+ * 与 read() 的本质区别：
+ *   read()  ：内核缓冲 --copy_to_user--> 用户缓冲（每次读一次拷贝 + 一次系统调用）
+ *   mmap()  ：用户页表直接指向内核分配的物理页（不拷贝，之后取值完全在用户态）
+ * 适合"高频取最新数据"的场景；代价是接口变成"自己解析共享内存 + 自己处理并发",
+ * 因此共享区用 seqlock 约定（见 struct sensor_shm 的说明）。
+ *
+ * 两个必须做的校验：
+ *   - 映射长度不能超过一页：我们只分配了一页，多映射会读到无关的内存；
+ *   - 必须是只读映射：共享区由内核单方写入，用户态写会破坏 seqlock 的一致性假设。
+ */
+static int sensor_mmap(struct file *file, struct vm_area_struct *vma)
+{
+	struct sensor_dev *sd = file->private_data;
+	unsigned long size = vma->vm_end - vma->vm_start;
+
+	if (size > PAGE_SIZE)
+		return -EINVAL;
+
+	/*
+	 * 偏移必须为 0：共享区只有一页，remap_pfn_range 直接用 virt_to_pfn(sd->shm)，
+	 * 完全不看 vma->vm_pgoff。若不检查，mmap(..., 4096) 会"成功"但映射的仍是同一页，
+	 * 调用者会以为自己拿到了第二页数据 —— 宁可显式拒绝这种无意义的偏移。
+	 */
+	if (vma->vm_pgoff)
+		return -EINVAL;
+
+	if (vma->vm_flags & VM_WRITE)
+		return -EPERM;
+
+	/*
+	 * 页保护显式设为只读。
+	 * 为什么不直接沿用 vma->vm_page_prot：它来自用户请求的 PROT_*，
+	 * 让内核侧的只读语义依赖调用方参数是脆弱的；显式覆盖后语义由驱动保证。
+	 */
+	vma->vm_page_prot = PAGE_READONLY;
+	/*
+	 * 映射范围不可扩展、coredump 时不导出内容。
+	 * 注意 Linux 6.3 起 vma->vm_flags 是只读成员（union 里的 const vm_flags_t），
+	 * 必须用 vm_flags_set() 这类 helper 修改；直接 `|=` 会编译报错。
+	 */
+	vm_flags_set(vma, VM_DONTEXPAND | VM_DONTDUMP);
+
+	/*
+	 * remap_pfn_range 把"物理页帧号"直接填进用户页表。
+	 * 共享区来自 __get_free_pages（线性映射区），virt_to_pfn 可直接换算；
+	 * 若改用 vmalloc 分配，就必须用 vmalloc_to_pfn 逐页换算，
+	 * 或者改用 vm_ops->fault + vm_insert_page（见实现文档的取舍分析）。
+	 */
+	return remap_pfn_range(vma, vma->vm_start, virt_to_pfn(sd->shm),
+			       size, vma->vm_page_prot);
 }
 
 /* write(): 演示写路径——写入 0x01 触发一次"立即采样" */
 static ssize_t sensor_write(struct file *file, const char __user *ubuf,
 			    size_t count, loff_t *ppos)
 {
-	struct sensor_file *sf = file->private_data;
-	struct sensor_dev *sd = sf->sd;
+	struct sensor_dev *sd = file->private_data;
 	char kbuf[8];
 
 	if (count == 0 || count > sizeof(kbuf))
@@ -449,11 +741,11 @@ static ssize_t sensor_write(struct file *file, const char __user *ubuf,
 
 static long sensor_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
-	struct sensor_file *sf = file->private_data;
-	struct sensor_dev *sd = sf->sd;
+	struct sensor_dev *sd = file->private_data;
 	struct sensor_sample snap;
 	struct sensor_stats stats;
 	u32 interval;
+	unsigned long flags;
 	int ret = 0;
 
 	/* 用户态指针未校验前不要解引用；先用 access_ok 做检查 */
@@ -490,6 +782,9 @@ static long sensor_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		stats.irq_count = sd->irq_count;
 		stats.i2c_errors = sd->i2c_errors;
 		stats.interval_ms = sd->interval_ms;
+		stats.kfifo_dropped = sd->kfifo_dropped;
+		stats.ring_count = sensor_ring_count(sd);
+		stats.ring_capacity = sensor_ring_capacity(sd);
 		mutex_unlock(&sd->lock);
 		if (copy_to_user((void __user *)arg, &stats, sizeof(stats)))
 			return -EFAULT;
@@ -501,6 +796,40 @@ static long sensor_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		sd->irq_count = 0;
 		sd->i2c_errors = 0;
 		sd->latest.seq = 0;
+		sd->kfifo_dropped = 0;
+		/*
+		 * 一并清空环形缓冲：RESET 的语义是"回到刚 probe 完的状态"，
+		 * 留着几十个旧样本会让"重置"名不副实。
+		 * kfifo_reset 要求独占访问（它会同时改写 in/out），所以用 ring_lock 保护。
+		 */
+		spin_lock_irqsave(&sd->ring_lock, flags);
+		kfifo_reset(&sd->ring);
+		spin_unlock_irqrestore(&sd->ring_lock, flags);
+		/*
+		 * 共享区也必须一起清空，否则会出现"seq 回退"：
+		 * RESET 把 latest.seq 归零后，新样本的 seq 从 1 重新开始，
+		 * 但共享区里还留着旧样本（seq 是几百），于是读者看到
+		 * 同一个窗口内 seq 先大后小 —— 这是真实踩到的 bug，
+		 * 被 user/ring_mmap_test.c / concurrency_test.c 的单调性校验抓住。
+		 */
+		if (sd->shm) {
+			/*
+			 * 清空共享区同样要走 seqlock 协议：这是一次"写入"，
+			 * 否则读者可能在 count/write_idx 刚清零、samples 还没被覆盖时
+			 * 采信一份自相矛盾的快照。seq 保持偶数是协议的终态要求。
+			 */
+			u32 seq;
+
+			spin_lock(&sd->shm_lock);
+			seq = READ_ONCE(sd->shm->seq) + 1;
+			WRITE_ONCE(sd->shm->seq, seq);
+			smp_wmb();
+			sd->shm->count = 0;
+			sd->shm->write_idx = 0;
+			smp_wmb();
+			WRITE_ONCE(sd->shm->seq, seq + 1);
+			spin_unlock(&sd->shm_lock);
+		}
 		mutex_unlock(&sd->lock);
 		break;
 
@@ -518,6 +847,7 @@ static const struct file_operations sensor_fops = {
 	.write		= sensor_write,
 	.unlocked_ioctl	= sensor_ioctl,
 	.poll		= sensor_poll,	/* select/poll/epoll */
+	.mmap		= sensor_mmap,	/* 零拷贝共享页 */
 	.fasync		= sensor_fasync,	/* SIGIO 异步通知 */
 	.llseek		= no_llseek,
 };
@@ -653,11 +983,50 @@ static int sensor_probe(struct i2c_client *client)
 	}
 	dev_info(dev, "continuous conversion enabled (config=0x%04x)\n", SENSOR_CFG_CONT_EN);
 
+	/*
+	 * 4. 采样环形缓冲（read 的数据源）。
+	 *    kfifo_alloc 会把请求的字节数向上取整到 2 的幂，所以"64 个样本"最终可能
+	 *    得到更多槽位（见 sensor_ring_capacity 的说明）；我们只依赖"满了会丢并计数"，
+	 *    不依赖精确容量。
+	 */
+	ret = kfifo_alloc(&sd->ring, SENSOR_RING_SAMPLES * sizeof(struct sensor_sample),
+			  GFP_KERNEL);
+	if (ret) {
+		dev_err(dev, "kfifo_alloc failed: %d\n", ret);
+		goto err_clear_clientdata;
+	}
+	spin_lock_init(&sd->ring_lock);
+	dev_info(dev, "ring ready: capacity=%u samples (%zu bytes each)\n",
+		 sensor_ring_capacity(sd), sizeof(struct sensor_sample));
+
+	/*
+	 * 5. mmap 共享区：一页，只读映射给用户态。
+	 *    __GFP_ZERO 让未写入区域为 0：用户态在第一个样本到达前读到的是"空状态"
+	 *    （magic/version 已就位、count=0），而不是随机数据。
+	 */
+	sd->shm_addr = __get_free_pages(GFP_KERNEL | __GFP_ZERO, 0);
+	if (!sd->shm_addr) {
+		ret = -ENOMEM;
+		dev_err(dev, "shared page alloc failed\n");
+		goto err_free_ring;
+	}
+	sd->shm = (struct sensor_shm *)sd->shm_addr;
+	sd->shm->magic = SENSOR_SHM_MAGIC;
+	sd->shm->version = SENSOR_SHM_VERSION;
+	spin_lock_init(&sd->shm_lock);
+	sd->shm_publish_delay_us = shm_publish_delay_us;
+	/*
+	 * 放在赋值之后打印。教训：这条日志最初写在 "ring ready" 那行（赋值之前），
+	 * 于是永远打印 0，把"参数没生效"的假象带进了排查过程 ——
+	 * 证据日志的采样点必须在被观测状态确定之后。
+	 */
+	dev_info(dev, "shm publish delay = %u us\n", sd->shm_publish_delay_us);
+
 	/* 4. 注册字符设备 -> /dev/sensor0 */
 	ret = sensor_chrdev_register(sd);
 	if (ret) {
 		dev_err(dev, "chrdev register failed: %d\n", ret);
-		goto err_clear_clientdata;
+		goto err_free_shm;
 	}
 
 	/* 5. 中断：实验环境自建虚拟中断源，真机换成传感器 ALERT 引脚对应的 IRQ */
@@ -701,6 +1070,10 @@ err_unreg_chrdev:
 	device_destroy(sensor_class, sd->devt);
 	cdev_del(&sd->cdev);
 	unregister_chrdev_region(sd->devt, 1);
+err_free_shm:
+	free_pages(sd->shm_addr, 0);
+err_free_ring:
+	kfifo_free(&sd->ring);
 err_clear_clientdata:
 	/*
 	 * probe 失败时清掉 client 的 drvdata。
@@ -722,6 +1095,13 @@ static void sensor_remove(struct i2c_client *client)
 	device_destroy(sensor_class, sd->devt);
 	cdev_del(&sd->cdev);
 	unregister_chrdev_region(sd->devt, 1);
+	/*
+	 * 释放驱动自己分配的两块内存：共享页与 kfifo 内部缓冲。
+	 * 顺序上必须在"停掉生产者"（hrtimer_cancel + free_irq）之后 ——
+	 * 否则中断处理还可能往已经释放的缓冲里写数据。
+	 */
+	free_pages(sd->shm_addr, 0);
+	kfifo_free(&sd->ring);
 	/* i2c client 由 i2c 核心根据设备树实例化，卸载时由核心释放，驱动不需要管 */
 	dev_info(&client->dev, "removed\n");
 }

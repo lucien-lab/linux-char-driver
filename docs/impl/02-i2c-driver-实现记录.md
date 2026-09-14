@@ -22,15 +22,16 @@
 三项测试的日志均产生于**工作区与 commit `b55a25c` 完全一致**的条件下
 （运行前后 `git diff` 为空；证据的有效性说明见第 6.4 节）。
 
-产物层面的关键事实（均从 `20260914-040846-02-i2c-driver.log` 摘出）：
+产物层面的关键事实（行号取自 `20260914-040846-02-i2c-driver.log`，即阶段 02 整改前最后一次完整通过的日志；
+CONFIG 相关的两行已按**整改后**实测校正，并在括号内注明新证据）：
 
 | 事实 | 实测值 | 日志行号 |
 |---|---|---|
 | 虚拟控制器注册的总线号与设备树节点 | `i2c-0, of_node=/virt-i2c` | 258 |
 | `probe(struct i2c_client *)` 被调用，地址来自设备树 `reg` | `probe: i2c client addr=0x48 interval=500ms` | 260 |
-| probe 阶段探测芯片（读配置寄存器） | `chip detected: config=0x0001` | 261 |
+| probe 阶段探测芯片（读配置寄存器） | `chip detected: config=0x0001` | 261（整改后措辞：`chip detected: config=0x0001 (continuous conversion already enabled)`，`logs/20260914-104902-02-i2c-driver.log:261`） |
 | i2c 从设备被枚举出来并绑定 | `/sys/bus/i2c/devices/0-0048`，`name=sensor-char` | 272 |
-| regmap 调试接口读到的寄存器 | `0: 0181 1: 0fa1 2: 0000` | 279 |
+| regmap 调试接口读到的寄存器 | `0: 0181 1: 0fa1 2: 0001` | 280（`logs/20260914-104902-02-i2c-driver.log`；整改前该行为 `2: 0000`，见 `20260914-040846-02-i2c-driver.log:279`） |
 | 设备树 `poll-interval-ms` 生效 | `[STAT] … interval=500` | 285 |
 | 温度换算正确 | 检查项 PASS（24.0~26.0 ℃ 区间） | 292 |
 
@@ -276,11 +277,13 @@ static s32 virt_i2c_smbus_xfer(struct i2c_adapter *adap, u16 addr,
 **反向的坑：不能声明 `I2C_FUNC_I2C`。**
 
 ```c
-/* virt_i2c.c:212-219 */
+/* virt_i2c.c:214-229（阶段 02 整改后更新：已删除多声明的 I2C_FUNC_SMBUS_BYTE） */
 static u32 virt_i2c_functionality(struct i2c_adapter *adap)
 {
-	return I2C_FUNC_SMBUS_BYTE_DATA | I2C_FUNC_SMBUS_WORD_DATA |
-	       I2C_FUNC_SMBUS_BYTE;
+	/* 只声明确实实现的能力：无命令字节的 SMBus Byte 协议（size=I2C_SMBUS_BYTE）
+	 * 在 smbus_xfer 里走 default 返回 -EOPNOTSUPP，声明了却不实现属于 over-claim；
+	 * 也不能声明 I2C_FUNC_I2C（那会让 regmap 改走 raw i2c_transfer，需要 master_xfer）。 */
+	return I2C_FUNC_SMBUS_BYTE_DATA | I2C_FUNC_SMBUS_WORD_DATA;
 }
 ```
 
@@ -315,8 +318,14 @@ if (i2c_check_functionality(i2c->adapter, I2C_FUNC_I2C))
 /* virt_i2c.c:26-34 的头注释 */
 0x00  TEMP      只读，16 位；数值 = 毫摄氏度 * 16 / 1000（LSB = 1/16 ℃）
 0x01  HUMIDITY  只读，16 位；数值 = %RH * 100（LSB = 0.01 %RH）
-0x02  CONFIG    读写，16 位；bit0=连续转换使能（模拟值，行为上只做记录）
+0x02  CONFIG    读写，16 位；bit0=连续转换使能：1=使能，0=关闭
+                （模拟值，行为上只做记录；语义必须三处一致：virt_i2c 头注释、
+                  probe 里的上电默认值、sensor_char 的日志与写入值）
 ```
+
+> **阶段 02 整改后更新**：上面是整改后的头注释（`virt_i2c.c:30-32`）。
+> 整改前只写了「bit0=连续转换使能（模拟值，行为上只做记录）」，
+> 没有明确 1/0 的含义，也没要求三处一致，直接导致了 §7.1 记录的语义矛盾。
 
 寄存器宏定义在 `virt_i2c.c:66-70`（`VREG_TEMP/VREG_HUMIDITY/VREG_CONFIG/VREG_COUNT`）。
 
@@ -534,15 +543,18 @@ i2c_smbus_read_word_swapped(const struct i2c_client *client, u8 command)
 
 ```
       · 从设备节点：/sys/bus/i2c/devices/0-0048，name=sensor-char
-      · registers 前几行：0: 0181 1: 0fa1 2: 0000
-（logs/20260914-040846-02-i2c-driver.log 第 272、279 行）
+      · registers 内容：0: 0181 1: 0fa1 2: 0001
+（logs/20260914-104902-02-i2c-driver.log 第 273、280 行；**阶段 02 整改后更新**：
+ 整改前同一处为 `2: 0000`，见 logs/20260914-040846-02-i2c-driver.log:279）
 ```
 
 这次读数自洽，且能作为独立交叉验证：
 
 - `reg 0`（TEMP）= `0x0181` = 385 → `385 × 1000 / 16` = **24062.5 m℃ = 24.06 ℃**，落在 24~26 ℃ 区间 ✔
 - `reg 1`（HUMIDITY）= `0x0fa1` = 4001 → **40.01 %RH**，落在芯片模拟的 4000~4199 ✔
-- `reg 2`（CONFIG）= `0x0000` → 与 `sensor_char.c:631` 的 `regmap_write(..., 0x0000)` 一致 ✔
+- `reg 2`（CONFIG）= `0x0001` → 与 `sensor_char.c:863` 的 `regmap_write(..., SENSOR_CFG_CONT_EN = 0x0001)` 一致 ✔
+  （**阶段 02 整改后更新**：整改前此处为 `0x0000`，与代码里 `regmap_write(..., 0x0000)` 一致但语义矛盾，见 §7.1；
+  整改后实测 `2: 0001`，证据 `logs/20260914-104902-02-i2c-driver.log:280`）
 
 如果字节序还是错的，同一处会显示 `0: 8101 1: a10f`（湿度变成 412 %RH，一眼可见不合理）。
 注意：`max_register = 0x02`，所以 dump 恰好是 3 个寄存器（0~2），这也反向确认了配置生效。
@@ -737,25 +749,36 @@ smoke         : pass=15 fail=0   logs/20260914-040900-smoke.log
 
 按"会不会咬人"排序，全部标注证据；**本轮任务只写文档、未修改任何代码**。
 
-### 7.1 中：CONFIG 寄存器的语义/日志三处不一致（不影响功能，但会误导读者）
+### 7.1 中：CONFIG 寄存器的语义/日志三处不一致 → **已在阶段 02 整改中修复（commit `730d0ff`）**
+
+> **状态（阶段 02 整改后更新）**：下表是整改前的问题记录，保留作为分析过程；
+> 三处已全部统一为「bit0=1 表示连续转换使能」：
+> - `virt_i2c.c:30-32`：寄存器图写明 `bit0 = 连续转换使能：1=使能，0=关闭`，并要求三处一致；
+> - `virt_i2c.c:344-345`：上电默认值注释改为「连续转换使能（bit0=1）」；
+> - `sensor_char.c:855-863`：probe 先读 CONFIG 打印 `chip detected: config=0x%04x (continuous conversion already enabled|off)`，
+>   再 `regmap_write(…, SENSOR_CFG_CONT_EN = 0x0001)` 并打印 `continuous conversion enabled (config=0x0001)`。
+> 整改后实测：`logs/20260914-104902-02-i2c-driver.log:261-262`、同日志 `:280`（`2: 0001`）。
 
 | 位置 | 内容 | 问题 |
 |---|---|---|
 | `virt_i2c.c:30` | `0x02  CONFIG … bit0=连续转换使能（模拟值，行为上只做记录）` | 定义 bit0 = **使能** |
-| `virt_i2c.c:320` | `chip->banks[i].regs[VREG_CONFIG] = 0x0001;  /* 上电默认：连续转换关 */` | 0x0001 表示 bit0=1=**使能**，注释却说"关" |
-| `sensor_char.c:630-631` | 打印 `chip detected: config=0x0001 -> enable continuous conversion` 后 `regmap_write(…, 0x0000)` | 日志说"enable"，紧接着把 bit0 清 0（即 disable）；意图（进入连续转换 or 单次转换）与代码相反 |
+| `virt_i2c.c:320` | `chip->banks[i].regs[VREG_CONFIG] = 0x0001;  /* 上电默认：连续转换关 */` | 0x0001 表示 bit0=1=**使能**，注释却说“关” |
+| `sensor_char.c:630-631` | 打印 `chip detected: config=0x0001 -> enable continuous conversion` 后 `regmap_write(…, 0x0000)` | 日志说“enable”，紧接着把 bit0 清 0（即 disable）；意图（进入连续转换 or 单次转换）与代码相反 |
 
 影响：`virt_i2c` 对这个寄存器**只做记录、不改变行为**（`:30` 明说），
-所以功能与测试结论不受影响（debugfs 实测 `reg 2 = 0x0000`，与写入一致）。
-但它会让读代码/读日志的人对"芯片当前处于什么模式"得出错误结论。
-建议（二选一，需要时再改）：
-- 若意图是"进入连续转换"：`regmap_write(…, 0x0001)`，日志改为 `-> enable continuous conversion (write 0x0001)`；
-- 若意图是"单次转换模式"：日志改为 `-> switch to one-shot mode`，并修正 `virt_i2c.c:320` 的注释。
+所以功能与测试结论不受影响（整改前 debugfs 实测 `reg 2 = 0x0000`，与当时的写入一致；
+**整改后为 `0x0001`**，证据 `logs/20260914-104902-02-i2c-driver.log:280`）。
+但它会让读代码/读日志的人对“芯片当前处于什么模式”得出错误结论。
+整改时选择的方案（原建议二选一里的第一条，已实施）：
+- 进入连续转换模式：`regmap_write(…, SENSOR_CFG_CONT_EN = 0x0001)`，
+  日志改为先读后打 `chip detected: config=0x%04x (continuous conversion already enabled|off)`，
+  写完再打 `continuous conversion enabled (config=0x0001)`。
 
 ### 7.2 中：`smbus_xfer` 只支持 BYTE / BYTE_DATA / WORD_DATA
 
 其它 size（`I2C_SMBUS_BLOCK_DATA`、`I2C_BLOCK_DATA`、`I2C_SMBUS_PROC_CALL` 等）返回
-`-EOPNOTSUPP`（`virt_i2c.c:202-203`），适配器也相应地不声明这些 capability（`:212-219`）。
+`-EOPNOTSUPP`（`virt_i2c.c:202-203`），适配器也相应地不声明这些 capability
+（`:214-229`，阶段 02 整改后更新：已同时删除 `I2C_FUNC_SMBUS_BYTE` 这一 over-claim 的能力位）。
 后果：本控制器**无法模拟需要块读的芯片**（很多 EEPROM/加速度计就是块读），
 也无法用来演练"regmap 遇到不支持的操作时如何降级/报错"。
 取舍：本项目的传感器只需要 word 读写，先用最小实现；扩展点很清楚（加 case 即可）。
@@ -842,7 +865,7 @@ QEMU 内手工观察点（需交互模式或放进测试脚本）：
 |---|---|---|
 | 从设备是否由 DT 枚举 | `ls /sys/bus/i2c/devices/` | `0-0048` 存在，`name` 为 `sensor-char` |
 | 绑定关系 | `readlink -f /sys/bus/i2c/devices/0-0048/driver` | 指向 `.../sensor_char` |
-| regmap 后端与寄存器 | `cat /sys/kernel/debug/regmap/0-0048/registers` | `0: 0181 1: 0fa1 2: 0000`（值随锯齿变化） |
+| regmap 后端与寄存器 | `cat /sys/kernel/debug/regmap/0-0048/registers` | `0: 0181 1: 0fa1 2: 0001`（CONFIG 为 probe 写入的 0x0001；整改前为 0000。值随锯齿变化） |
 | 控制器统计 | `cat /sys/kernel/debug/virt_i2c/stats` | `transfers=… errors=… injected_left=… ro_writes=…` |
 | 故障注入 | `echo 3 > /sys/kernel/debug/virt_i2c/inject_error` | 随后 3 次总线传输失败（阶段 04 验证） |
 

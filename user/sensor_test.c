@@ -90,6 +90,9 @@ int main(int argc, char **argv)
 		printf("  open=%u read=%u irq=%u i2c_err=%u interval=%ums\n",
 		       stats.open_count, stats.read_count, stats.irq_count,
 		       stats.i2c_errors, stats.interval_ms);
+		/* 阶段 03：环形缓冲统计——看"读方是否跟得上采样节奏" */
+		printf("  ring: count=%u capacity=%u dropped=%u\n",
+		       stats.ring_count, stats.ring_capacity, stats.kfifo_dropped);
 	}
 
 	close(fd);

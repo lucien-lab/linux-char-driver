@@ -28,10 +28,16 @@
  *     —— 下界 ≥3 掐死上面那个假通过；上界 ≤12 抓"消费后仍报可读"的忙轮询错误
  *        （实测坏实现可达 12 万次）。
  *
- *  3) 电平触发语义三段断言 + per-open 独立性
+ *  3) 电平触发语义三段断言 + 队列可读性
  *     —— 未消费时连续 5 次 poll 都应报 POLLIN（level 语义持续存在，
  *        one-shot 实现只能通过 1 次）；消费后必须立刻变为 0；
- *        新开的 fd 必须立刻可读（证明 last_seq 是按 fd 记的，不是全局标志）。
+ *        新开的 fd 在"缓冲确有未读样本"时必须立刻可读。
+ *
+ *     【阶段 03 语义变更】可读性判据从"本 fd 是否消费过全局最新样本"
+ *     （per-fd last_seq）改为"共享环形缓冲是否非空"——这是引入 kfifo 的必然结果，
+ *     也修掉了 per-fd 方案在多进程共享队列下"poll 报可读、read 却阻塞"的矛盾。
+ *     本文件里受影响的只有 (a) 的前提（改为先静置两个采样周期），
+ *     其余断言的强度不变。
  *
  * 阻塞路径也补了时序断言（blocking_wait_ms）：先与"样本到达沿"对齐，再测第二次
  * read 的耗时，此时应 ≈ 一个完整采样周期；若驱动没真的睡在 waitqueue 上、
@@ -87,6 +93,15 @@ static long long now_ms(void)
 
 	clock_gettime(CLOCK_MONOTONIC, &ts);
 	return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+/* 睡眠指定毫秒数（阶段 03 起需要"静置攒数据"来建立确定性前提） */
+static void sleep_ms(long long ms)
+{
+	struct timespec ts = { .tv_sec = ms / 1000,
+			       .tv_nsec = (ms % 1000) * 1000000 };
+
+	nanosleep(&ts, NULL);
 }
 
 /*
@@ -359,7 +374,16 @@ static int test_poll_level(int *unread_hits_out, int *after_consume_out,
 		return 0;
 	}
 
-	/* (a) per-open 独立性：全新 fd 立即应报可读（前提是设备已有过样本） */
+	/*
+	 * (a) 全新 fd 应立刻报可读 —— 前提是"缓冲里此刻确实还有未读样本"。
+	 *
+	 * 阶段 03 起，可读性由"共享环形缓冲是否非空"决定（不再用 per-fd 的 last_seq，
+	 * 因为多进程共享同一队列时 per-fd 记录会谎报可读）。因此这里先静置两个采样
+	 * 周期：生产者持续投递、期间没有任何人消费，队列必然非空。
+	 * 不做这一步，本项就退化成"看上一个测试结束时队列恰好空不空"——那是时序
+	 * 碰运气，而不是判定。
+	 */
+	sleep_ms(2 * DEFAULT_INTERVAL_MS);
 	if (poll_readable_now(fd) == 1)
 		*new_fd_ok_out = 1;
 	printf("[IO] new_fd_immediately_readable=%d\n", *new_fd_ok_out);
