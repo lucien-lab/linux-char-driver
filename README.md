@@ -1,12 +1,28 @@
 # Linux 字符设备驱动开发与 I2C 传感器数据采集
 
+[![CI](https://github.com/sensible1091/linux-char-driver/actions/workflows/ci.yml/badge.svg)](https://github.com/sensible1091/linux-char-driver/actions/workflows/ci.yml)
+![Platform](https://img.shields.io/badge/platform-ARM64%20%7C%20Linux%206.6.156-blue)
+![Kernel](https://img.shields.io/badge/kernel%20module-C%20%2F%20GPL--2.0-informational)
+[![License](https://img.shields.io/badge/license-GPL--2.0-green)](LICENSE)
+
 > 个人项目 · 独立开发 · C / Linux Kernel / ARM64
 > 2025.12 — 2026.02
 
 在 **macOS (Apple Silicon) 开发机**上搭建一套完整的 Linux 驱动开发环境：
 交叉编译 ARM64 内核 → QEMU 运行 ARM64 Linux → 内核字符设备驱动 + I2C 传感器采集 → 设备树解耦 → dmesg/ftrace/GDB 调试。
 
-**整套流程已实测跑通**，产物在 `artifacts/` 目录，可一键复现。
+**整套流程已实测跑通**。构建产物（`artifacts/`）、内核源码（`kernel-src/`）、QEMU 串口日志（`logs/`）体积过大不入库，按「六、快速开始」可一键复现。
+
+---
+
+## 项目亮点
+
+- **5 个内核模块、2769 行 C / 7194 行代码与脚本**：核心 `driver/sensor_char.c`（1676 行）实现字符设备四种 IO 模型、kfifo 环形缓冲 + `mmap` 零拷贝、sysfs/debugfs 参数与统计、Runtime PM；另有自研虚拟 I2C 控制器 `virt_i2c.c`、标准 IIO 驱动 `sensor_iio.c`、KUnit 单元测试模块。
+- **七套自动化测试套件、197 项断言全绿**，零内核 WARNING / Oops。实测数据：`01-io-models 16` · `02-i2c-driver 19` · `03-ringbuffer-mmap 40` · `04-sysfs-debugfs 53` · `05-iio 22` · `06-runtime-pm-kunit 32` · `smoke 15`。
+- **每个阶段都有独立验证报告 + 负控（变异）实验**：主动向驱动注入 20+ 处缺陷（删掉 `poll_wait()`、去掉 12 位符号扩展、互换 IIO 通道……），确认测试会 FAIL —— 专门用来拆穿「假绿」。见 `docs/verify/`。
+- **并发正确性有实测证据**：kfifo + 自实现 seqlock，并用 **KCSAN** 内核数据竞争检测器跑通 `concurrency_test`（8 进程并发读写）。
+- **完整链路端到端可复现**：设备树 `compatible` 匹配 → `probe` → 中断注册（自建 `irq_chip`/`irq_domain`）→ `/dev/sensor0` → 线程化中断内读 I2C → 用户态 `read`/`ioctl`；`ftrace` 抓到线程化中断执行轨迹，GDB 断点命中 `i2c_get_adapter`。
+- **不依赖真实硬件**：用内核自带 `i2c-stub` + 寄存器级芯片模拟替代传感器，I2C/中断/字符设备代码路径与真机一致，移植到树莓派 + SHT30 只需改 3 处（见 `docs/04-真机移植指南.md`）。
 
 ---
 
@@ -76,32 +92,51 @@ macOS (Apple Silicon)                     ← 你敲代码的地方
 
 ```
 linux-char-driver/
-├── README.md                    本文件
-├── driver/
-│   ├── sensor_char.c            字符设备 + I2C + 中断 + 设备树匹配（核心，~450 行）
-│   ├── sensor_ioctl.h           内核/用户态共享的 ioctl 接口定义
-│   └── Makefile                 外部模块编译
-├── user/
-│   ├── sensor_test.c            用户态测试程序（read/ioctl/write）
-│   └── sensor_test              已交叉编译的 ARM64 静态可执行文件
+linux-char-driver/
+├── README.md                       本文件
+├── LICENSE                         GPL-2.0（与 MODULE_LICENSE("GPL") 一致）
+├── driver/                         内核模块（2769 行 C）
+│   ├── sensor_char.c               字符设备 + kfifo/mmap + sysfs/debugfs + PM（1676 行）
+│   ├── virt_i2c.c                  虚拟 I2C 控制器：irq_chip/irq_domain + 寄存器级芯片模拟
+│   ├── sensor_iio.c                标准 IIO 驱动（trigger / buffer / channel）
+│   ├── sensor_kunit.c              KUnit 单元测试（纯逻辑层 sensor_calc.h）
+│   ├── sensor_calc.h               定点数转换等纯逻辑，可脱离内核单测
+│   ├── sensor_ioctl.h              内核/用户态共享的 ioctl 接口定义
+│   ├── modules.load                模块加载顺序
+│   └── Makefile                    外部模块编译
+├── user/                           用户态测试程序（交叉编译为 ARM64 静态 ELF）
+│   ├── sensor_test.c               read / ioctl / write 基本接口
+│   ├── io_models_test.c            阻塞 / 非阻塞 / poll·epoll / fasync·SIGIO
+│   ├── ring_mmap_test.c            kfifo 环形缓冲 + mmap 零拷贝
+│   ├── concurrency_test.c          8 进程并发压力（KCSAN 验证对象）
+│   └── iio_read_test.c             IIO 字符设备读取
+├── tests/                          自动化测试链路（阶段套件 + runner）
+│   ├── phases/                     7 个测试套件：smoke / 01~06
+│   ├── runner/                     结果解析库（把串口输出解析成 PASS/FAIL）
+│   └── userspace/sensor_stat.c     sysfs/debugfs 状态校验工具
 ├── dts/
-│   ├── sensor-char.dtsi         设备树节点说明（含真机写法参考）
-│   └── sensor-node.dts.inc      脚本用于插入 QEMU dtb 的纯节点片段
-├── scripts/
-│   ├── 01-setup-macos.sh        开发机环境（qemu/lima/make/musl 工具链）
-│   ├── 02-setup-vm.sh           创建 Linux 虚拟机 + 装依赖
-│   ├── 03-build-all-vm.sh       【虚拟机内】一键编内核+驱动+设备树+rootfs
-│   ├── 04-run-qemu-vm.sh        【虚拟机内】跑 QEMU（自动演示 / 交互模式）
-│   ├── 05-debug-gdb.sh          【虚拟机内】GDB 调试内核与模块演示
-│   └── init-demo.sh             initramfs 的 init（开机自动演示全流程）
-├── docs/
-│   ├── 01-环境搭建与踩坑实录.md   真实踩过的 9 个坑 + 解决办法
-│   ├── 02-驱动设计笔记.md         字符设备/I2C/中断/设备树四大模块讲解
-│   ├── 03-调试方法手册.md         dmesg/ftrace/GDB 实操 + 真实 WARNING 案例
-│   └── 04-真机移植指南.md         换到树莓派 + SHT30 的改动清单
-├── artifacts/                  构建产物（内核/设备树/rootfs/驱动模块）
-└── kernel-src/linux-6.6.156/   内核源码
+│   ├── sensor-char.dtsi            设备树节点说明（含真机写法参考）
+│   └── sensor-node.dts.inc         脚本用于插入 QEMU dtb 的纯节点片段
+├── scripts/                        环境搭建 / 构建 / 运行 / 调试 / 门禁脚本
+│   ├── 01-setup-macos.sh           开发机环境（qemu / lima / aarch64-musl 工具链）
+│   ├── 03-build-all-vm.sh          【虚拟机内】一键编内核 + 驱动 + 设备树 + rootfs
+│   ├── 04-run-qemu-vm.sh           【虚拟机内】跑 QEMU（自动演示 / 交互模式）
+│   ├── 05-debug-gdb.sh             【虚拟机内】GDB 调试内核与模块
+│   ├── 13-vm-fast-cycle.sh         【虚拟机内】改代码→重编→跑测试 快速循环
+│   └── 23-check-worktree-clean.sh  合并门禁：扫描交付树是否残留实验代码
+└── docs/
+    ├── 01-环境搭建与踩坑实录.md     真实踩过的 9 个坑 + 解决办法
+    ├── 02-驱动设计笔记.md           字符设备 / I2C / 中断 / 设备树 四大模块讲解
+    ├── 03-调试方法手册.md           dmesg / ftrace / GDB 实操 + 真实 WARNING 案例
+    ├── 04-真机移植指南.md           换到树莓派 + SHT30 的改动清单
+    ├── 10-开发与验证守则.md         工程纪律：什么算「验证通过」
+    ├── 11-阶段任务书.md             6 个阶段的接口契约与验收标准
+    ├── impl/                       各阶段实现记录
+    ├── kb/                         各阶段知识点整理（含内核源码行号索引）
+    └── verify/                     各阶段独立验证报告 + 负控实验结果
 ```
+
+未入库（体积原因，脚本可重新生成）：`artifacts/`（内核 Image / dtb / initramfs / .ko）、`kernel-src/`（内核源码树）、`rootfs/`、`logs/`。
 
 ---
 
@@ -128,11 +163,11 @@ bash scripts/01-setup-macos.sh && bash scripts/02-setup-vm.sh
 
 # 2) 进虚拟机，一键构建（编内核约 15-30 分钟）
 limactl shell dev
-bash /Users/$USER/workspace/self-study/projects/linux-char-driver/scripts/03-build-all-vm.sh
+bash "$PWD/scripts/03-build-all-vm.sh"
 
 # 3) 运行 + 观察
-bash /Users/$USER/workspace/self-study/projects/linux-char-driver/scripts/04-run-qemu-vm.sh
-# 手动练习（推荐）：INTERACTIVE=1 bash .../04-run-qemu-vm.sh
+bash "$PWD/scripts/04-run-qemu-vm.sh"
+# 手动练习（推荐）：INTERACTIVE=1 bash "$PWD/scripts/04-run-qemu-vm.sh"
 ```
 
 ---
@@ -143,3 +178,12 @@ bash /Users/$USER/workspace/self-study/projects/linux-char-driver/scripts/04-run
   驱动里的 I2C 调用路径、中断路径、字符设备路径**与真机完全一致**。
 - 唯一区别：真机的 `i2c-1` 换成 `i2c-stub` 的 `i2c-0`，传感器寄存器解析换成 SHT30 公式。
 - 移植到树莓派 + SHT30 只需改 3 处，见 `docs/04-真机移植指南.md`。
+
+---
+
+## 八、许可
+
+GPL-2.0（见 [LICENSE](LICENSE)）。
+
+内核模块以 GPL 兼容许可发布，才能合法调用内核内部导出符号 —— 各模块源码中的
+`MODULE_LICENSE("GPL")` 与本仓库 LICENSE 保持一致。

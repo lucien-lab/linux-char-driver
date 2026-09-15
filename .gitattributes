@@ -1,0 +1,8 @@
+# 统一换行符：仓库内一律 LF（项目在 macOS 开发、Linux 内构建）
+* text=auto eol=lf
+
+# 二进制产物（若被显式提交，禁止任何文本转换）
+*.ko    binary
+*.dtb   binary
+*.gz    binary
+*.bin   binary

@@ -1,0 +1,114 @@
+name: CI
+
+# 说明：本项目的核心测试需要在 ARM64 Linux + 自编 6.6.156 内核里跑 QEMU，
+# 无法在 GitHub 托管 runner 上完成。这里只做「普通 runner 能跑」的门禁：
+#   1) 交叉编译全部用户态程序   —— 能暴露内核/用户态共享头文件的接口错误
+#   2) 仓库自身一致性            —— 脚本语法、ioctl 编号唯一性、文档链接可达
+# 内核模块编译与 197 项测试请按 README「六、快速开始」在本地虚拟机复现。
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cross-build:
+    name: 交叉编译 ARM64 用户态程序
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 aarch64 交叉工具链
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq gcc-aarch64-linux-gnu
+
+      - name: 编译 user/ 与 tests/userspace/
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          n=0
+          for f in user/*.c tests/userspace/*.c; do
+            echo "==> $f"
+            aarch64-linux-gnu-gcc -static -Wall -Wextra -I driver \
+              -o "out/$(basename "$f" .c)" "$f"
+            n=$((n + 1))
+          done
+          echo "交叉编译完成：$n 个程序"
+
+      - name: 确认产物确为 ARM64 静态 ELF
+        run: |
+          set -euo pipefail
+          file out/* > out/BUILD-INFO.txt
+          cat out/BUILD-INFO.txt
+          n=$(grep -c 'ARM aarch64' out/BUILD-INFO.txt || true)
+          nm=$(grep -c 'statically linked' out/BUILD-INFO.txt || true)
+          echo "ARM64 = $n / 静态链接 = $nm"
+          [ "$n" -ge 6 ] && [ "$nm" -ge 6 ] || { echo "产物数量或架构不符"; exit 1; }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: aarch64-userspace
+          path: out/
+
+  repo-check:
+    name: 仓库一致性检查
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 脚本语法检查
+        run: |
+          set -euo pipefail
+          for f in scripts/*.sh tests/*/*.sh; do
+            printf 'bash -n %s\n' "$f"
+            bash -n "$f"
+          done
+
+      - name: ioctl 命令编号唯一性
+        run: |
+          set -euo pipefail
+          awk '
+            /^#define[[:space:]]+SENSOR_IOC_[A-Z_]+[[:space:]]+_IO/ {
+              line = $0
+              sub(/.*\(/, "", line); sub(/\).*/, "", line)
+              split(line, a, ",")
+              cmd = a[2]; gsub(/[^0-9]/, "", cmd)
+              if (cmd == "") next
+              key = a[1] SUBSEP cmd
+              if (key in seen) {
+                printf "重复 ioctl: %s 与 %s 同为 cmd=%s\n", $2, seen[key], cmd
+                bad = 1
+              }
+              seen[key] = $2; count++
+            }
+            END { printf "检查 %d 个 ioctl 命令\n", count; exit bad }
+          ' driver/sensor_ioctl.h
+
+      - name: README 本地链接可达性
+        run: |
+          set -euo pipefail
+          fail=0
+          {
+            # markdown 行内链接中的相对路径（排除 http(s)）
+            grep -oE '\]\([^)]*\)' README.md | sed -E 's/^\]\(//; s/\)$//' \
+              | grep -vE '^(https?:|#|mailto:)' | sed 's/#.*$//' | grep -v '^$'
+            # 反引号包裹、且带目录的仓库内文件路径（同时支持中文文件名）
+            grep -oE '`[^`[:space:]]*/[^`[:space:]]*\.(md|c|h|sh|inc|dtsi|yml|txt)`' README.md \
+              | tr -d '`'
+          } | sort -u | while read -r p; do
+            if [ -e "$p" ]; then
+              echo "OK   $p"
+            else
+              echo "断链 $p"
+              echo "$p" >> /tmp/deadlinks
+            fi
+          done
+          if [ -s /tmp/deadlinks ]; then
+            echo "发现 $(wc -l < /tmp/deadlinks) 条断链"; exit 1
+          fi
+          echo "README 本地链接全部可达"
