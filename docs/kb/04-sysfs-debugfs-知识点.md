@@ -458,7 +458,7 @@ static void sensor_apply_interval(struct sensor_dev *sd, unsigned long ms)
 这个抽取的直接动因是一个真实不一致：阶段 04 之前
 `ioctl(SENSOR_IOC_SET_INTERVAL)` 的下限是 10ms，而 sysfs 契约要求 1ms，
 **同一个设置走两个入口结果不同**。抽成共用函数后两个入口统一为 `1..60000`
-（父 agent 裁定，见 `docs/11-阶段任务书.md` 阶段 04）。ioctl 侧只多两行
+（集成负责人裁定，见 `docs/11-阶段任务书.md` 阶段 04）。ioctl 侧只多两行
 （`driver/sensor_char.c:800-802`）：
 
 ```c
@@ -509,7 +509,7 @@ if (IS_ERR(sd->dbg)) {
 **为什么 debugfs 失败不是致命错误**：debugfs 是可选调试通道，不是设备功能的一部分。
 设备参数与数据通路（sysfs + 字符设备）不依赖它。probe 应该照常成功，
 只是把调试接口摘掉。所以处理方式是 `dev_warn` + 指针置 NULL，**不让 probe 失败**。
-（这是父 agent 明确的裁定，见 `docs/11-阶段任务书.md` 阶段 04。）
+（这是集成负责人明确的裁定，见 `docs/11-阶段任务书.md` 阶段 04。）
 
 **`ERR_PTR(-ENODEV)` 到底是什么语义**——这里要精确，不能含糊：
 
@@ -1065,11 +1065,11 @@ in theory there are no stability constraints"（`Documentation/filesystems/debug
 本工作目录在 macOS 上，构建/运行走项目脚本（QEMU 是 TCG + cortex-a72，不是 HVF）：
 
 ```bash
-# 本 lane（LANE=04 → 构建目录 ~/lab-04）的完整流程
-limactl shell dev bash -c 'LANE=04 bash /Users/lucien/workspace/self-study/projects/wt-04/scripts/13-vm-fast-cycle.sh'
-LANE=04 bash /Users/lucien/workspace/self-study/projects/wt-04/scripts/20-macos-gen-dtb.sh    # 新 worktree 首次
-LC_ALL=C LANE=04 bash /Users/lucien/workspace/self-study/projects/wt-04/scripts/21-macos-sync-artifacts.sh
-LC_ALL=C LANE=04 bash /Users/lucien/workspace/self-study/projects/wt-04/scripts/22-macos-run-test.sh 04-sysfs-debugfs 300
+# 本工作树（WORKTREE=04 → 构建目录 ~/lab-04）的完整流程
+limactl shell dev bash -c 'WORKTREE=04 bash /Users/lucien/workspace/self-study/projects/wt-04/scripts/13-vm-fast-cycle.sh'
+WORKTREE=04 bash /Users/lucien/workspace/self-study/projects/wt-04/scripts/20-macos-gen-dtb.sh    # 新 worktree 首次
+LC_ALL=C WORKTREE=04 bash /Users/lucien/workspace/self-study/projects/wt-04/scripts/21-macos-sync-artifacts.sh
+LC_ALL=C WORKTREE=04 bash /Users/lucien/workspace/self-study/projects/wt-04/scripts/22-macos-run-test.sh 04-sysfs-debugfs 300
 ```
 
 > **本文的实测值来自已跑过的日志，不是本次重新跑的**：本次任务是只读分析，
@@ -1172,19 +1172,19 @@ sensor_char 0-0048: regmap read failed: -5
 dmesg | grep -E 'WARNING:|Call trace:|BUG:'   # 期望无输出
 ```
 
-### 6.3 复现整批（本工作目录的 lane 04 命令）
+### 6.3 复现整批（本工作目录的工作树 04 命令）
 
 ```bash
-LC_ALL=C LANE=04 bash /Users/lucien/workspace/self-study/projects/wt-04/scripts/22-macos-run-test.sh 04-sysfs-debugfs 300
+LC_ALL=C WORKTREE=04 bash /Users/lucien/workspace/self-study/projects/wt-04/scripts/22-macos-run-test.sh 04-sysfs-debugfs 300
 # 期望结尾：[TEST:END] 04-sysfs-debugfs pass=42 fail=0
 # 回归：
-LC_ALL=C LANE=04 bash /Users/lucien/workspace/self-study/projects/wt-04/scripts/22-macos-run-test.sh 03-ringbuffer-mmap 40
-LC_ALL=C LANE=04 bash /Users/lucien/workspace/self-study/projects/wt-04/scripts/22-macos-run-test.sh 02-i2c-driver 19
-LC_ALL=C LANE=04 bash /Users/lucien/workspace/self-study/projects/wt-04/scripts/22-macos-run-test.sh 01-io-models 16
-LC_ALL=C LANE=04 bash /Users/lucien/workspace/self-study/projects/wt-04/scripts/22-macos-run-test.sh smoke 15
+LC_ALL=C WORKTREE=04 bash /Users/lucien/workspace/self-study/projects/wt-04/scripts/22-macos-run-test.sh 03-ringbuffer-mmap 40
+LC_ALL=C WORKTREE=04 bash /Users/lucien/workspace/self-study/projects/wt-04/scripts/22-macos-run-test.sh 02-i2c-driver 19
+LC_ALL=C WORKTREE=04 bash /Users/lucien/workspace/self-study/projects/wt-04/scripts/22-macos-run-test.sh 01-io-models 16
+LC_ALL=C WORKTREE=04 bash /Users/lucien/workspace/self-study/projects/wt-04/scripts/22-macos-run-test.sh smoke 15
 ```
 
-**未验证**：本次没有在 lane 04 重新跑以上命令（任务要求只读分析、不构建），
+**未验证**：本次没有在工作树 04 重新跑以上命令（任务要求只读分析、不构建），
 各阶段 PASS 数来自主 worktree 同源代码的日志（见文首日志表）。
 
 ---

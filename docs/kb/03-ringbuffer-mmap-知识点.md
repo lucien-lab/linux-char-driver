@@ -758,7 +758,7 @@ QEMU 的 `-accel tcg` 有两种线程模型：
 | L2 多核 + 全局唯一性断言 | 多进程消费样本 `seq` 全局无重复/无丢失（`dup_seqs=0`） | "出队路径无可见重复/丢样本" | 完全排除微小窗口竞态 |
 | L3 KCSAN / lockdep 报告 | 检测器无针对本驱动的报告 | "检测器未发现数据竞争" | "数学上无竞态" |
 
-**表述纪律（父 agent 在 `docs/11-阶段任务书.md` 阶段 03 的裁定，第 3 条）**：
+**表述纪律（集成负责人在 `docs/11-阶段任务书.md` 阶段 03 的裁定，第 3 条）**：
 > 只有「多核 + 全局唯一性断言（+ 可选的 KCSAN）」都拿到证据，
 > 才允许在文档/简历里写「无竞态」；否则必须写成「冒烟级并发回归」，并说明局限。
 
@@ -919,25 +919,25 @@ A：改成 `dma_alloc_coherent()`，或者普通内存 + `dma_map_single()` 建�
 
 ## 7. 亲手验证：QEMU 内可复现命令、预期输出、实测数据
 
-### 7.1 复现链路（本 lane，构建目录隔离）
+### 7.1 复现链路（本工作树，构建目录隔离）
 
 ```bash
 # ① 虚拟机内编译模块 + 用户态程序 + 打包 initramfs
-limactl shell dev bash -c 'LANE=03v bash /Users/lucien/workspace/self-study/projects/wt-03v/scripts/13-vm-fast-cycle.sh'
+limactl shell dev bash -c 'WORKTREE=03v bash /Users/lucien/workspace/self-study/projects/wt-03v/scripts/13-vm-fast-cycle.sh'
 
 # ② 把产物从虚拟机拷到 artifacts/
-LANE=03v bash /Users/lucien/workspace/self-study/projects/wt-03v/scripts/21-macos-sync-artifacts.sh
+WORKTREE=03v bash /Users/lucien/workspace/self-study/projects/wt-03v/scripts/21-macos-sync-artifacts.sh
 
 # ③ 启动 QEMU 跑阶段 03 测试（MTTCG + 2 vCPU，自动 PASS/FAIL 结论）
-LANE=03v bash /Users/lucien/workspace/self-study/projects/wt-03v/scripts/22-macos-run-test.sh 03-ringbuffer-mmap 300
+WORKTREE=03v bash /Users/lucien/workspace/self-study/projects/wt-03v/scripts/22-macos-run-test.sh 03-ringbuffer-mmap 300
 
 # ④ 回归
-LANE=03v bash /Users/lucien/workspace/self-study/projects/wt-03v/scripts/22-macos-run-test.sh 01-io-models 300
-LANE=03v bash /Users/lucien/workspace/self-study/projects/wt-03v/scripts/22-macos-run-test.sh smoke 180
+WORKTREE=03v bash /Users/lucien/workspace/self-study/projects/wt-03v/scripts/22-macos-run-test.sh 01-io-models 300
+WORKTREE=03v bash /Users/lucien/workspace/self-study/projects/wt-03v/scripts/22-macos-run-test.sh smoke 180
 ```
 
 > 若内核树仍是 KCSAN 模式（`CONFIG_KCSAN=y`）先不要构建，等 60 秒重查（最多 10 分钟）。
-> 日志落在仓库 `logs/`（文件名带时间戳与本 lane 标识，如
+> 日志落在仓库 `logs/`（文件名带时间戳与本工作树标识，如
 > `logs/20260914-133755-main-03-ringbuffer-mmap.log`）。
 
 ### 7.2 QEMU 内的检查项（预期输出形态）

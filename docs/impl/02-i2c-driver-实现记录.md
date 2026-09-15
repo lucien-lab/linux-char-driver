@@ -2,7 +2,7 @@
 
 > 对应 commit：`b55a25c`（阶段 02 全部代码与测试改动）
 > 对比基线 commit：`53f1498`（升级前的完整项目）
-> 本文档由「补写文档」任务产出：代码由前一个 agent 实现，父 agent 在其实施超时后只做了一行修复
+> 本文档为交付后补写的实现记录：主体代码由阶段 02 实现者完成，集成负责人在收尾阶段只做了一行修复
 > （`sensor_regmap_cfg.val_format_endian`），其余内容均为对现有实现与实测证据的记录。
 > 测试与日志路径：`logs/`（QEMU 串口原始输出）、`artifacts/`（内核镜像与 initramfs）。
 
@@ -237,7 +237,7 @@ chip->adap.dev.of_node = pdev->dev.of_node;
   没有这一行，`sensor@48` 永远不会变成 i2c client。
 - 实测证据（正常）：日志第 258 行 `registered i2c adapter i2c-0, of_node=/virt-i2c`；
   第 272 行从设备节点 `/sys/bus/i2c/devices/0-0048` 存在。
-- **负控实验**（由并行的独立验证 lane 实施，本轮最有价值的证据）：
+- **负控实验**（由并行的独立验证工作树实施，本轮最有价值的证据）：
   把 `adapter.of_node` 赋值删掉后重跑，`02-i2c-driver` 从 16 PASS 掉到 **4 PASS / 10 FAIL**
   （`logs/20260914-040748-02-i2c-driver.log`），失败项包括
 
@@ -716,7 +716,7 @@ smoke         : pass=15 fail=0   logs/20260914-040900-smoke.log
 | 恢复后 | 16 PASS / 0 FAIL | `20260914-040805-02-i2c-driver.log` |
 
 用途：证明"设备树枚举 + 驱动绑定 + regmap 生效 + 字符设备注册"这一整条检查链
-对 **`adapter.of_node` 这一行**是敏感的（该实验由并行的独立验证 lane 执行，
+对 **`adapter.of_node` 这一行**是敏感的（该实验由并行的独立验证工作树执行，
 恢复后 `git status` 无残留改动，见 6.4 节）。
 
 ### 6.3 字节序 bug 的"修复前 / 修复后"对照
@@ -729,7 +729,7 @@ smoke         : pass=15 fail=0   logs/20260914-040900-smoke.log
 ### 6.4 证据有效性说明（为什么可以引用上面的日志）
 
 1. **工作区与 commit 一致**：引用上述日志的前后，`git diff` 均为空
-   （`git status --short` 仅显示并行 lane 新建的临时探针脚本 `tests/phases/02b-…`、`02c-…`，
+   （`git status --short` 仅显示并行工作树新建的临时探针脚本 `tests/phases/02b-…`、`02c-…`，
    没有对已跟踪文件的修改）。
 2. **产物与代码一致**：`artifacts/initramfs.cpio.gz` 的 mtime 晚于
    `driver/sensor_char.c`、`driver/virt_i2c.c` 的最后修改时间；且未被重建的测试运行
@@ -737,7 +737,7 @@ smoke         : pass=15 fail=0   logs/20260914-040900-smoke.log
    等价于对"运行的模块确实是修复版"的独立确认。
 3. **有反向对照**：同一套检查在 6.2 / 6.3 的"故意破损"状态下会失败，
    说明 6.1 的 PASS 不是因为检查项恒真。
-4. **一个需要读者知道的干扰源**：本轮验证期间有**并行的独立验证 lane** 在同一个工作区
+4. **一个需要读者知道的干扰源**：本轮验证期间有**并行的独立验证工作树**在同一个工作区
    做负控实验（临时改代码 → 重跑 → `git checkout` 恢复），因此 `logs/` 里会出现
    时间相邻但结论相反的日志（例如 `040731` PASS / `040748` FAIL / `040805` PASS）。
    这不是测试不稳定，而是**故意制造破损**的实验记录；引用时应以
@@ -884,8 +884,8 @@ QEMU 内手工观察点（需交互模式或放进测试脚本）：
 | `tests/phases/smoke.sh` | +15 / -2 | 见第 5 节逐条说明 |
 | `tests/userspace/sensor_stat.c` | 新增 47 行 | 只读取证小工具 |
 | `scripts/20-macos-gen-dtb.sh` | +2 / -2 | 打印改成新节点结构（仅输出层） |
-| `docs/10-开发与验证守则.md`、`docs/11-阶段任务书.md` | 小改 | **由父 agent 在 phase 02 前后更新**（守则里补"同一份产物可用 `test=` 选阶段"的说明与 `Unknown kernel command line parameter` 的噪声解释；任务书里把阶段 01 的强化检查表固化为契约）。这些改动随 `b55a25c` 一起提交，但**不属于阶段 02 实现者的工作**。 |
+| `docs/10-开发与验证守则.md`、`docs/11-阶段任务书.md` | 小改 | **由集成负责人在 phase 02 前后更新**（守则里补"同一份产物可用 `test=` 选阶段"的说明与 `Unknown kernel command line parameter` 的噪声解释；任务书里把阶段 01 的强化检查表固化为契约）。这些改动随 `b55a25c` 一起提交，但**不属于阶段 02 实现者的工作**。 |
 
-关键修复的责任划分：**字节序 bug 由父 agent 以一行修复完成**
+关键修复的责任划分：**字节序 bug 由集成负责人以一行修复完成**
 （`sensor_char.c:584` 新增 `.val_format_endian = REGMAP_ENDIAN_LITTLE`，
-并补写了 `:570-581` 的踩坑注释）；其余代码与测试由阶段 02 实现 agent 完成。
+并补写了 `:570-581` 的踩坑注释）；其余代码与测试由阶段 02 实现者完成。

@@ -1,6 +1,6 @@
 # 阶段 03 验证报告：kfifo 环形缓冲 + mmap 零拷贝 + 多进程并发
 
-- **验证者**：独立验证 agent（本阶段唯一被允许做临时改动与构建的 lane）
+- **验证者**：独立验证者（本阶段唯一被允许做临时改动与构建的工作树）
 - **验证日期**：2026-09-14
 - **被验代码基线**（工作区，未提交）：
   - `driver/sensor_char.c` sha256 `845ec4b3…78c0605`
@@ -43,7 +43,7 @@
 | 1.8 | **写入方 `write_seqlock/write_sequnlock` 保护；用户态"读 seq→读数据→重读 seq"** | 内核侧确有 `write_seqlock`（`sensor_char.c:247/252`），**但共享区的 `seq` 字段从不被写入**（`grep 'shm->seq'` 无任何赋值） | ❌ **实质不符**（见 5.S1） |
 | 1.9 | `.mmap` 检查映射长度，超过 1 页返回 `-EINVAL` | `sensor_char.c:573-574` | ✅ 符合（实测 errno=22） |
 | 1.10 | `__get_free_pages`/`kfifo_alloc` 失败路径、remove 时释放 | probe 错误路径 `sensor_char.c:944-953`；remove `sensor_char.c:965-982`（先 `hrtimer_cancel`+`free_irq` 再 `free_pages`/`kfifo_free`） | ✅ 符合 |
-| 1.11 | 多进程并发：允许多 open，**per-open 状态（`struct sensor_file`）保证互不干扰** | 实现**删除**了 `struct sensor_file`，改为全局共享队列语义 | ❌ 契约偏差（见 6.2；实现理由成立，但需父 agent 裁定） |
+| 1.11 | 多进程并发：允许多 open，**per-open 状态（`struct sensor_file`）保证互不干扰** | 实现**删除**了 `struct sensor_file`，改为全局共享队列语义 | ❌ 契约偏差（见 6.2；实现理由成立，但需集成负责人裁定） |
 | 1.12 | `ring_mmap_test` 输出 `[RING] dropped=` / `mmap_reads=100 mmap_retries= mmap_invalid=` / `OVERALL=` | `ring_mmap_test.c` 均按契约输出（另有额外键） | ✅ 符合 |
 | 1.13 | `concurrency_test` 输出 `[CONC] children=8 failed= invalid_samples= i2c_errors=` / `OVERALL=` | 会输出，但分成两行（`children=/failed=` 与汇总行），非契约写的单行逐字格式 | ⚠️ 轻微格式偏差（脚本按 token 解析，不影响判定） |
 | 1.14 | 阶段测试至少包含 8 项检查 | 实际 28 项，契约 8 项全含 | ✅ 超出契约 |
@@ -140,7 +140,7 @@
   实现把一个**共享队列**当作可读性判据，理由是"per-fd last_seq 在多进程共享队列时会谎报可读"——该理由**成立且修掉了一个真实矛盾**。
   但这属于对契约的实质性改写：`poll` 的语义由"每个 fd 独立看待序列"变成"全局队列长度"，
   阶段 01 那项"per-open 独立性"检查已名不副实（改名后不误导，但断言强度下降，见 7.1）。
-- **处置建议**：由父 agent 明确批准该语义变更，并在 `docs/11` 阶段 03 节把该条改成与实现一致，避免后续阶段（05 IIO）按旧契约开发。
+- **处置建议**：由集成负责人明确批准该语义变更，并在 `docs/11` 阶段 03 节把该条改成与实现一致，避免后续阶段（05 IIO）按旧契约开发。
 
 ### S5【中】kfifo 实际容量 85 ≠ 契约的 64
 - **位置**：`driver/sensor_char.c:103`（`SENSOR_RING_SAMPLES 64`）、`sensor_char.c:876`；probe 日志实测 `capacity=85`。
@@ -271,7 +271,7 @@
 1. **修 S1**（`shm->seq` 由内核维护），并把 seqlock 检查项改成"能被负控抓住"的形式；给出 `mmap_retries>0` 的正向证据（可用受控 `udelay` 放大窗口）。
 2. **补 `docs/kb/03-…知识点.md`**；修正 `docs/impl` 的日志引用错配；把"并发无竞态"的表述降级为"冒烟级并发回归 + 单核限制说明"。
 3. **修 S3**（`io_errors`/`snapshots` 取值取到 child=0）与补"丢弃守恒"不变量断言。
-4. **处理 S4**（`struct sensor_file` 退役）——由父 agent 裁定后在 `docs/11` 同步契约，或恢复 per-open 语义。
+4. **处理 S4**（`struct sensor_file` 退役）——由集成负责人裁定后在 `docs/11` 同步契约，或恢复 per-open 语义。
 
 非阻塞但建议一并处理：S2（并发 seq 唯一性断言 / `-smp` / KCSAN）、S6（mmap offset 校验）、S7（注释标注良性数据竞争）、S8（`copy_to_user` 失败回队）。
 

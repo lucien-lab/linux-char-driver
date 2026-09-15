@@ -1,6 +1,6 @@
 # 阶段 02 独立复验报告：整改是否真的修好了验证报告里的问题
 
-> 复验者：独立复验 agent（不参与实现、不参与整改）
+> 复验者：独立复验者（不参与实现、不参与整改）
 > 复验时间：2026-09-14（本轮日志时间戳 10:46~10:49）
 > 被复验对象：工作区未提交状态（源码 = commit `b55a25c` + 整改改动 + 新增文档）
 > 复验依据：`docs/verify/02-i2c-driver-验证报告.md`（原报告）、`docs/impl/02-i2c-driver-整改记录.md`（整改说明）、
@@ -60,7 +60,7 @@ bash scripts/22-macos-run-test.sh <阶段> 180
 | **F6** / 原 F7 | CONFIG 语义三处矛盾（注释/日志/写入值） | 统一为 bit0=1 使能，三处互相引用，probe 写使能值并回读打印 | **已修复** | `virt_i2c.c:30`（寄存器图）、`:344`（上电默认注释）、`sensor_char.c:77`（`SENSOR_CFG_CONT_EN`）、`:636-654`（回读→写 `0x0001`→打印）；测试新增 `:81` CONFIG==0001 与 `:90` 日志断言；干净日志 `104902:283` `regmap CONFIG 语义正确（0x0001）`、`:280 registers 2: 0001` |
 | **F7** / 原 F8 | `local_irq_disable/enable` 无条件开中断 | 改 `local_irq_save/restore` | **已修复** | `driver/sensor_char.c:442/444`（`flags` 声明于 `:426`）；注释 `:437-441` 说明理由。全量日志 `grep "enabled interrupts" logs/*.log` = 0 命中 |
 | **F8** / 原 F9 | probe 失败路径留下悬空 clientdata；`regmap_write` 返回值未检查 | 统一失败出口 `err_clear_clientdata` 清 clientdata；检查配置写返回值 | **已修复（并补做独立负控 NC-D）** | `driver/sensor_char.c:704-706`（`i2c_set_clientdata(client, NULL)`）；`:628/:639/:652/:660` 全部 `goto err_clear_clientdata`；`:649-653` 检查 `regmap_write`。**NC-D** 实证：强制写失败后 probe 中止（日志 `104847:262` `failed to enable continuous conversion: -5`，无 `probe done`、无 `/dev/sensor0`），且无 WARNING/BUG/UAF |
-| **原 F1** | 缺 `docs/kb/02-*`（DoD#5 硬伤） | 由并行 lane 产出 | **已修复** | `docs/kb/02-i2c-driver-知识点.md` 存在（104 KB / 1761 行，含机制/源码行号/面试问答/亲手验证）；三份文档齐备 |
+| **原 F1** | 缺 `docs/kb/02-*`（DoD#5 硬伤） | 由并行工作树产出 | **已修复** | `docs/kb/02-i2c-driver-知识点.md` 存在（104 KB / 1761 行，含机制/源码行号/面试问答/亲手验证）；三份文档齐备 |
 | **额外-1** / 原 F10 | 无条件打包已弃用的 `i2c-stub.ko` | 只在 `modules.load` 引用时才打包 | **已修复** | `scripts/13-vm-fast-cycle.sh:104-109`；独立解包本轮 `artifacts/initramfs.cpio.gz`：`find -name 'i2c-stub*' | wc -l` = **0**，`lib/modules/6.6.156/` 仅 `virt_i2c.ko`+`sensor_char.ko`，`etc/modules.load` 仅这两行 |
 | **额外-2** / 原 F11 | 日志看不到用户态温度读数 | 测试中回显温度读数 | **已修复** | `02-i2c-driver.sh:98`；干净日志 `104902:296` 有 `sensor_test 温度读数：temp=24.500 …` |
 

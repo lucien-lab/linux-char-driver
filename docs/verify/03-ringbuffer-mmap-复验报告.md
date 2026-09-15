@@ -1,6 +1,6 @@
 # 阶段 03 复验报告：kfifo 环形缓冲 + mmap 零拷贝 + 多进程并发（整改后）
 
-- **复验者**：独立复验 agent（lane `03v`，构建目录 `~/lab-03v`，日志写入本工作树 `logs/*-03v-*.log`，与其他 lane 隔离）
+- **复验者**：独立复验者（工作树 `03v`，构建目录 `~/lab-03v`，日志写入本工作树 `logs/*-03v-*.log`，与其他工作树隔离）
 - **复验日期**：2026-09-14
 - **复验基线**：本工作树 `wt-03v` HEAD = `4a5165e`（工作区 `git status` 干净，未提交任何东西）
   - `driver/sensor_char.c` sha256 `7ab08c6d…77c4a0`
@@ -18,7 +18,7 @@
 |---|---|
 | **S1（假 seqlock）是否真修好** | **实质修好**：内核亲手写 `shm->seq`（奇/偶协议 + 双侧 `smp_wmb`），用户态重试路径**不是死代码**（受控放大器下观测到 `mmap_retries≈1.3×10⁸`）。负控确认可证伪。 |
 | **S2（单核不可证并发）是否解决** | **环境已改对**：QEMU 已用 `-smp 2` + `-accel tcg,thread=multi`，日志实测 `smp: Brought up 1 node, 2 CPUs`。但「并发无竞态」仍**不能写**（见第 4、5 节）。 |
-| **整改是否可复现** | **不可稳定复现（阻塞项）**：同一份代码、同一条命令，我在本 lane 连续 3 次干净运行 03 阶段分别是 **37/3、40/0、37/3**；失败的全部落在「放大器验证」3 项（`shm_seq_odd_seen=0` / `mmap_retries=0`）。父 agent 报告的「40/40 稳定」**不成立**。 |
+| **整改是否可复现** | **不可稳定复现（阻塞项）**：同一份代码、同一条命令，我在本工作树连续 3 次干净运行 03 阶段分别是 **37/3、40/0、37/3**；失败的全部落在「放大器验证」3 项（`shm_seq_odd_seen=0` / `mmap_retries=0`）。集成负责人报告的「40/40 稳定」**不成立**。 |
 | **DoD 五条** | 1/3/4 **通过**；2 **不通过（间歇性失败）**；5 **部分不符**（详见第 7 节）。 |
 | **阶段 03 总判定** | **不通过**（技术实现本身正确，但验收测试的放大器配置不稳定、文档与代码/日志不一致，无法满足 docs/10 的 DoD 第 2、5 条）。 |
 
@@ -35,7 +35,7 @@
 | S1.3 | 加锁串行化多个内核写者 | `spin_lock(&sd->shm_lock)`/`spin_unlock` 包住整个发布过程（`:305`/`:330` 附近）；`shm_lock` 已从 `seqlock_t` 换成 `spinlock_t` | ✅ 符合 |
 | S1.4 | 用户态重试逻辑**真的会被执行**（不是死代码） | 受控放大器（`shm_publish_delay_us`）下实测 `mmap_retries=130484077`、`shm_seq_odd_seen=162`（`logs/20260914-134522-03v-03-ringbuffer-mmap.log:293/296` 区段） | ✅ 符合 |
 | S1.5 | 存在「抓假 seqlock」的确定性探针 | 用户程序先等一次 seq 变化（最多 500ms），脚本断言 `shm_seq_advances=1`；负控 NC-a 下探针 `0 → 0` 并被抓住（见第 2 节） | ✅ 符合 |
-| S1.6 | 父 agent 的整数溢出修复（`retries` 用 `long long`） | `user/ring_mmap_test.c`：`long long retries_total`、`printf("%lld")`；对照历史日志 `logs/20260914-125014-03*.log` 曾出现 `mmap_retries=-712206102`（int 溢出），现大值正常打印 | ✅ 修好 |
+| S1.6 | 集成负责人的整数溢出修复（`retries` 用 `long long`） | `user/ring_mmap_test.c`：`long long retries_total`、`printf("%lld")`；对照历史日志 `logs/20260914-125014-03*.log` 曾出现 `mmap_retries=-712206102`（int 溢出），现大值正常打印 | ✅ 修好 |
 | S1.7 | 放大器参数是否引入「读者长期占满窗口」问题 | `AMPLIFY_MS=2000`（紧凑循环 2s）、`shm_publish_delay_us=1000`（1ms 写窗口）。读者用 `retries` 上限 100000 保护（超限返回 -1 记 invalid），不会死循环；正常模式窗口 ~1µs，无副作用 | ⚠️ 无死循环风险，但**参数偏弱导致不稳定**（见第 3.5、6.1 节） |
 
 **S1 结论**：假 seqlock 的根因（`seqcount` 在私有内存、共享区字段从不写）**已被正确修复**，且策略与 docs/11 阶段 03 给出的参考写法完全吻合。代之以「确定性探针 + 可证伪负控」的检查设计，方向正确。
@@ -56,7 +56,7 @@
 
 ## 2. 负控实验（本复验者亲自改码 → 构建 → 跑 QEMU → 还原）
 
-所有临时改动均已 `git checkout` 还原；还原后 `git diff --stat` 为空，`git status --short` 相对起点无新增（唯一 untracked 是父 agent 并发写入的 `docs/kb/03-…知识点.md`，非我产生）。
+所有临时改动均已 `git checkout` 还原；还原后 `git diff --stat` 为空，`git status --short` 相对起点无新增（唯一 untracked 是集成负责人并发写入的 `docs/kb/03-…知识点.md`，非我产生）。
 
 | ID | 改了什么 | 期望 | 实测 | 日志（本工作树）/ 关键行 | 判定 |
 |---|---|---|---|---|---|
@@ -82,7 +82,7 @@
 | 03 干净复跑 #3（还原后最终复跑） | `20260914-134842-03v-03-ringbuffer-mmap.log` | **37 PASS / 3 FAIL**（`odd_seen=0`） |
 | 01 回归 | `20260914-134535-03v-01-io-models.log`、`20260914-134854-03v-01-io-models.log` | 均 **16 PASS / 0 FAIL** |
 | smoke 回归 | `20260914-134546-03v-smoke.log`、`20260914-134905-03v-smoke.log` | 均 **15 PASS / 0 FAIL** |
-| 构建 | `scripts/13`（`LANE=03v`） | 无 C error / 无 C warning；仅有 kbuild 的 `Clock skew detected`（宿主/虚拟机时间戳告警，非代码告警） |
+| 构建 | `scripts/13`（`WORKTREE=03v`） | 无 C error / 无 C warning；仅有 kbuild 的 `Clock skew detected`（宿主/虚拟机时间戳告警，非代码告警） |
 
 **关键结论**：03 阶段在同一份源码、同一命令下 **3 次里 2 次 37/3**，失败点固定为：
 
@@ -100,7 +100,7 @@
 
 ## 4. KCSAN 证据核对（不采信转述，逐文件核对）
 
-| 父 agent 的说法 | 我在日志中核对到的事实 | 判定 |
+| 集成负责人的说法 | 我在日志中核对到的事实 | 判定 |
 |---|---|---|
 | 普通内核下 03 阶段 40/40 | `logs/20260914-130201-03-ringbuffer-mmap.log`（严格模式内核）：`[TEST:END] … pass=40 fail=0` | ✅ 一致 |
 | KCSAN_STRICT 内核下 03 阶段零 data-race | 同日志 `:71 kcsan: strict mode configured`、`:99 selftest 3/3 passed`、全文 `BUG: KCSAN` **0 处**、`:81 smp: Brought up 1 node, 2 CPUs` | ✅ 一致 |
@@ -139,7 +139,7 @@
 
 | ID | 级别 | 问题 | 证据 |
 |---|---|---|---|
-| **N1** | **高** | **放大器检查不稳定**：标准配置 `shm_publish_delay_us=1000` + `AMPLIFY_MS=2000` 下，约 1/3~2/3 的运行完全撞不上 1ms 写窗口，导致 3 项 FAIL。父 agent 的「40/40 稳定」不成立。 | 本复验 3 次干净运行：`…134433`(37/3)、`…134522`(40/0)、`…134842`(37/3)；失败形态固定，`iters≈5.1e6, seq_changes≈200, odd_seen=0, retries=0` |
+| **N1** | **高** | **放大器检查不稳定**：标准配置 `shm_publish_delay_us=1000` + `AMPLIFY_MS=2000` 下，约 1/3~2/3 的运行完全撞不上 1ms 写窗口，导致 3 项 FAIL。集成负责人的「40/40 稳定」不成立。 | 本复验 3 次干净运行：`…134433`(37/3)、`…134522`(40/0)、`…134842`(37/3)；失败形态固定，`iters≈5.1e6, seq_changes≈200, odd_seen=0, retries=0` |
 | **N2** | 中 | **实现文档与测试脚本参数不符**：`docs/impl/03…实现记录.md` 第 3.2.3 节表格写「窗口 20ms、观测 15s、retries 6~8 亿」，但已提交脚本用的是 1ms / 2s。文档描述的是更稳的旧配置，实际交付的是更弱（且不稳定）的配置。 | `docs/impl/…:205-219` vs `user/ring_mmap_test.c:89`(AMPLIFY_MS=2000) + `tests/phases/03…sh:162`(delay=1000) |
 | **N3** | 中 | **出队全局唯一性仍无判别力证据**：NC-c（无锁 `kfifo_out`）40/0。该断言目前只是「没抓到也算过」。 | `logs/20260914-134658-03v-03-ringbuffer-mmap.log` |
 | **N4** | 低 | **实现记录头部仍引用 28 项旧日志**（`logs/20260914-111209…` pass=28），与当前 40 项脚本/日志不一致，违反 DoD 第 5 条「结论能被日志复现」。 | `docs/impl/03…实现记录.md:6-9,407` |
@@ -156,11 +156,11 @@
 
 | # | DoD 条目 | 判定 | 依据 |
 |---|---|---|---|
-| 1 | `make` 无 error、无 warning（新增代码部分） | **通过** | `scripts/13`（LANE=03v）无 C error/warning；唯一输出是 kbuild 的 `Clock skew detected`（文件系统时间戳告警，非代码告警）。 |
+| 1 | `make` 无 error、无 warning（新增代码部分） | **通过** | `scripts/13`（WORKTREE=03v）无 C error/warning；唯一输出是 kbuild 的 `Clock skew detected`（文件系统时间戳告警，非代码告警）。 |
 | 2 | `scripts/22 … 03-ringbuffer-mmap` 全 PASS 且到 `[TEST:END]` | **不通过** | 本复验 3 次干净运行：2 次 37/3、1 次 40/0（失败为放大器 3 项）。**不可稳定全 PASS**。 |
 | 3 | `smoke` 仍全 PASS | **通过** | `logs/20260914-134905-03v-smoke.log`：15 PASS / 0 FAIL。 |
 | 4 | panic 0；WARNING/BUG/Call trace 需解释 | **通过** | 本次全部运行「内核 panic: 0 / 内核告警: 0」；KCSAN_STRICT 下 01 阶段唯一 `data-race` 报告位于 `mm/rmap`（与驱动无关，已在第 4 节解释）。 |
-| 5 | 三份文档落盘且结论能被日志复现 | **部分不符** | ①`docs/kb/03-ringbuffer-mmap-知识点.md` 在本复验进行中（13:46–13:47）才由父 agent 写入，当前为 **untracked**（尚未提交）——存在性满足、入库性未定；②`docs/impl/03…实现记录.md` 头部仍引用 28 项旧日志（N4），放大器参数与实际脚本不符（N2）。 |
+| 5 | 三份文档落盘且结论能被日志复现 | **部分不符** | ①`docs/kb/03-ringbuffer-mmap-知识点.md` 在本复验进行中（13:46–13:47）才由集成负责人写入，当前为 **untracked**（尚未提交）——存在性满足、入库性未定；②`docs/impl/03…实现记录.md` 头部仍引用 28 项旧日志（N4），放大器参数与实际脚本不符（N2）。 |
 
 **阶段 03 总体判定：不通过。**
 
@@ -173,8 +173,8 @@
 
 ## 附：复验者操作合规声明
 
-- 本复验只**临时修改**了 `driver/sensor_char.c`、`user/ring_mmap_test.c`、`tests/phases/03-ringbuffer-mmap.sh`（负控用），每次实验后 `git checkout` 还原；还原后 `git diff --stat` 为空、`git status --short` 与起点一致（唯一 untracked 文件 `docs/kb/03-…知识点.md` 为父 agent 并发写入，非本 agent 产生）。
+- 本复验只**临时修改**了 `driver/sensor_char.c`、`user/ring_mmap_test.c`、`tests/phases/03-ringbuffer-mmap.sh`（负控用），每次实验后 `git checkout` 还原；还原后 `git diff --stat` 为空、`git status --short` 与起点一致（唯一 untracked 文件 `docs/kb/03-…知识点.md` 为集成负责人并行写入，非本次复验产生）。
 - 最终用**还原后的源码**重新构建并复跑 03/01/smoke（`…134842` / `…134854` / `…134905`）。
 - 本复验唯一写入的项目文件是 `docs/verify/03-ringbuffer-mmap-复验报告.md`；**未** `git commit`、**未** 修改 `~/kernel-build`、**未**修改 `kernel-src/`。
-- 构建一律经 `scripts/13-vm-fast-cycle.sh`（`LANE=03v`），运行一律经 `scripts/21-macos-sync-artifacts.sh` + `scripts/22-macos-run-test.sh`；dtb 由 `scripts/20-macos-gen-dtb.sh` 重新生成（本工作树原本无 `artifacts/`）。
-- 日志全部落在本工作树 `logs/*-03v-*.log`，与主检出/其他 lane 隔离。
+- 构建一律经 `scripts/13-vm-fast-cycle.sh`（`WORKTREE=03v`），运行一律经 `scripts/21-macos-sync-artifacts.sh` + `scripts/22-macos-run-test.sh`；dtb 由 `scripts/20-macos-gen-dtb.sh` 重新生成（本工作树原本无 `artifacts/`）。
+- 日志全部落在本工作树 `logs/*-03v-*.log`，与主检出/其他工作树隔离。

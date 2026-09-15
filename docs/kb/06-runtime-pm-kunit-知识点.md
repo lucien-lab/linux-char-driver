@@ -1158,26 +1158,26 @@ dmesg 是环形缓冲，旧版本的 `ok` 行可能还在；只看"有 ok"就会
 
 ### 7.1 一键复现（与 `docs/10-开发与验证守则.md` 一致）
 
-本 lane（06）的隔离命令（构建目录 `~/lab-06`，与其他 lane 互不干扰）：
+本工作树（06）的隔离命令（构建目录 `~/lab-06`，与其他工作树互不干扰）：
 
 ```bash
 cd /Users/lucien/workspace/self-study/projects/wt-06
 
 # ① 在虚拟机里编译模块 + 用户态程序 + 打包 initramfs（约 10~30s，不重编内核）
-limactl shell dev bash -c 'LANE=06 bash /Users/lucien/workspace/self-study/projects/wt-06/scripts/13-vm-fast-cycle.sh'
+limactl shell dev bash -c 'WORKTREE=06 bash /Users/lucien/workspace/self-study/projects/wt-06/scripts/13-vm-fast-cycle.sh'
 
 # ② 产物拷回宿主
-LANE=06 bash /Users/lucien/workspace/self-study/projects/wt-06/scripts/21-macos-sync-artifacts.sh
+WORKTREE=06 bash /Users/lucien/workspace/self-study/projects/wt-06/scripts/21-macos-sync-artifacts.sh
 
 # ③ 阶段测试（QEMU，TCG + cortex-a72）
-LANE=06 bash /Users/lucien/workspace/self-study/projects/wt-06/scripts/22-macos-run-test.sh 06-runtime-pm-kunit 300
+WORKTREE=06 bash /Users/lucien/workspace/self-study/projects/wt-06/scripts/22-macos-run-test.sh 06-runtime-pm-kunit 300
 
 # ④ 回归（括号内为检查项数）
-LANE=06 bash /Users/lucien/workspace/self-study/projects/wt-06/scripts/22-macos-run-test.sh 04-sysfs-debugfs 300   # 42
-LANE=06 bash /Users/lucien/workspace/self-study/projects/wt-06/scripts/22-macos-run-test.sh 03-ringbuffer-mmap 300  # 40
-LANE=06 bash /Users/lucien/workspace/self-study/projects/wt-06/scripts/22-macos-run-test.sh 02-i2c-driver 300       # 19
-LANE=06 bash /Users/lucien/workspace/self-study/projects/wt-06/scripts/22-macos-run-test.sh 01-io-models 300       # 16
-LANE=06 bash /Users/lucien/workspace/self-study/projects/wt-06/scripts/22-macos-run-test.sh smoke 300              # 15
+WORKTREE=06 bash /Users/lucien/workspace/self-study/projects/wt-06/scripts/22-macos-run-test.sh 04-sysfs-debugfs 300   # 42
+WORKTREE=06 bash /Users/lucien/workspace/self-study/projects/wt-06/scripts/22-macos-run-test.sh 03-ringbuffer-mmap 300  # 40
+WORKTREE=06 bash /Users/lucien/workspace/self-study/projects/wt-06/scripts/22-macos-run-test.sh 02-i2c-driver 300       # 19
+WORKTREE=06 bash /Users/lucien/workspace/self-study/projects/wt-06/scripts/22-macos-run-test.sh 01-io-models 300       # 16
+WORKTREE=06 bash /Users/lucien/workspace/self-study/projects/wt-06/scripts/22-macos-run-test.sh smoke 300              # 15
 ```
 
 **一次构建可跑任意阶段**：`initramfs` 里打包了 `tests/runner/init.sh` 与全部

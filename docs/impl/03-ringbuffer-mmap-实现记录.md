@@ -1,6 +1,6 @@
 # 阶段 03 实现记录：kfifo 环形缓冲 + mmap 零拷贝 + 多进程并发
 
-- **代码提交**：待父 agent 统一提交（本阶段工作区状态：`driver/sensor_char.c`、`driver/sensor_ioctl.h`、
+- **代码提交**：待集成负责人统一提交（本阶段工作区状态：`driver/sensor_char.c`、`driver/sensor_ioctl.h`、
   `user/{ring_mmap_test,concurrency_test,io_models_test,sensor_test}.c`、`tests/userspace/sensor_stat.c`、
   `tests/phases/{03-ringbuffer-mmap.sh,01-io-models.sh}`、`tests/runner/{lib,init}.sh`（SKIP 支持）、
   `scripts/22-macos-run-test.sh`（SKIP 解析））

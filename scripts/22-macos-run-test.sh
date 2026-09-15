@@ -29,7 +29,7 @@ for f in "$IMAGE" "$DTB" "$INITRD"; do
 done
 
 mkdir -p "$PROJ/logs"
-LOG="$PROJ/logs/$(date '+%Y%m%d-%H%M%S')-${LANE:-main}-$TEST.log"
+LOG="$PROJ/logs/$(date '+%Y%m%d-%H%M%S')-${WORKTREE:-main}-$TEST.log"
 
 echo "==> 启动 QEMU（TCG / cortex-a72 / ${TIMEOUT}s 超时）"
 echo "    串口日志: $LOG"

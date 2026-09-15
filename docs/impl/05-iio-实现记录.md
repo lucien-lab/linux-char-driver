@@ -182,11 +182,11 @@ echo 100 > /sys/kernel/config/iio/triggers/hrtimer/inst0/sampling_frequency   # 
 
 **修法**：写到 `/sys/bus/iio/devices/trigger*/sampling_frequency`。
 实测：写入 50 后回读 `50.000000`（`IIO_VAL_INT_PLUS_MICRO` 格式）。
-**需要父 agent 处理**：`docs/11` 契约里那两行示例命令应改成 trigger 设备路径，
+**需要集成负责人处理**：`docs/11` 契约里那两行示例命令应改成 trigger 设备路径，
 并说明"configfs 只负责实例化 trigger，采样率通过 trigger 设备属性控制"。
 
-### P3：模块清单是"构建期烤进去"的 → smoke 回归假失败（基础设施缺陷，影响所有 lane）
-现象：本 lane 用 `TEST=05-iio` 构建后，拿同一份 initramfs 跑 `smoke` 得到 **4 PASS / 11 FAIL**
+### P3：模块清单是"构建期烤进去"的 → smoke 回归假失败（基础设施缺陷，影响所有工作树）
+现象：本工作树用 `TEST=05-iio` 构建后，拿同一份 initramfs 跑 `smoke` 得到 **4 PASS / 11 FAIL**
 （`/dev/sensor0` 不存在、probe 日志缺失、ftrace 抓不到……），看起来像"阶段 02 的字符设备驱动被改坏了"。
 
 **根因**：阶段脚本的**选择**已经做成运行时可切换（内核命令行 `test=<阶段>`），
@@ -194,7 +194,7 @@ echo 100 > /sys/kernel/config/iio/triggers/hrtimer/inst0/sampling_frequency   # 
 `05-iio.modules` 只加载 `virt_i2c.ko + sensor_iio.ko`，所以 smoke 需要的 `sensor_char.ko`
 根本没被 `insmod`。
 
-**修法**（本 lane 内改了两处基础设施，父 agent 合并时需要留意）：
+**修法**（本工作树内改了两处基础设施，集成负责人合并时需要留意）：
 
 1. `scripts/13-vm-fast-cycle.sh`：把默认清单与**每个阶段的专属清单**都打包到
    `/etc/modules/{default,<阶段>}.load`，并把 `/etc/modules.load` 恒定重置为 `default.load`
@@ -208,7 +208,7 @@ echo 100 > /sys/kernel/config/iio/triggers/hrtimer/inst0/sampling_frequency   # 
 logs/20260914-130813-05-smoke.log   --- 模块清单: /etc/modules.load        → 15 PASS / 0 FAIL
 logs/20260914-130828-05-05-iio.log  --- 模块清单: /etc/modules/05-iio.load → 22 PASS / 0 FAIL
 ```
-这条修复同时消除了主 lane 后续做"跨阶段回归"时会踩的同一个坑。
+这条修复同时消除了主工作树后续做"跨阶段回归"时会踩的同一个坑。
 
 ### P4：注释里的 `/*` 触发 `-Wcomment` 警告
 `scan_elements/*_index` 写在块注释里会被 gcc 视为嵌套注释起点，编译报
@@ -243,12 +243,12 @@ IIO 版用来证明"我知道对于传感器这类器件，内核期望的形态
 ```bash
 WT=/Users/lucien/workspace/self-study/projects/wt-05
 # 构建（约 10 秒；注意必须显式传 PROJ=<worktree>，见 P0）
-limactl shell dev bash -c "LANE=05 PROJ=$WT TEST=05-iio bash $WT/scripts/13-vm-fast-cycle.sh"
-LANE=05 bash $WT/scripts/21-macos-sync-artifacts.sh
+limactl shell dev bash -c "WORKTREE=05 PROJ=$WT TEST=05-iio bash $WT/scripts/13-vm-fast-cycle.sh"
+WORKTREE=05 bash $WT/scripts/21-macos-sync-artifacts.sh
 bash $WT/scripts/20-macos-gen-dtb.sh                 # 设备树（含 sensor@49）
 # 测试（同一份产物可跑任意阶段）
-LANE=05 bash $WT/scripts/22-macos-run-test.sh 05-iio 240
-LANE=05 bash $WT/scripts/22-macos-run-test.sh smoke 180
+WORKTREE=05 bash $WT/scripts/22-macos-run-test.sh 05-iio 240
+WORKTREE=05 bash $WT/scripts/22-macos-run-test.sh smoke 180
 ```
 
 ### 6.2 检查项结论
@@ -274,7 +274,7 @@ LANE=05 bash $WT/scripts/22-macos-run-test.sh smoke 180
 | 无内核告警 | `WARNING:/Call trace:` 计数 0（测试体执行后取样） |
 
 **smoke 回归：15 PASS / 0 FAIL**（`logs/20260914-130813-05-smoke.log`）——
-阶段 02 的字符设备驱动在本 lane 内未被破坏。
+阶段 02 的字符设备驱动在本工作树内未被破坏。
 
 驱动侧 probe 链路（日志实测）：
 
@@ -286,10 +286,10 @@ sensor_iio 0-0049: IIO device registered: name=sensor_iio channels=3 (temp + hum
 
 ### 6.3 运行环境说明（重要）
 
-本 lane 构建时共享内核树正处于另一 lane 的 **KCSAN 实验**状态
+本工作树构建时共享内核树正处于另一工作树的 **KCSAN 实验**状态
 （`~/kernel-build/linux-6.6.156/.config` 中 `CONFIG_KCSAN=y`，Image 51 MB）。
-本 lane 的 `Image` 与模块均由该树产出，二者**互相匹配**（故能正常加载运行）。
-若父 agent 之后 `restore` 内核配置并重建，需要按 `scripts/13 → 21` 重新生成产物，
+本工作树的 `Image` 与模块均由该树产出，二者**互相匹配**（故能正常加载运行）。
+若集成负责人之后 `restore` 内核配置并重建，需要按 `scripts/13 → 21` 重新生成产物，
 否则会出现 `invalid module format`。
 
 ---
@@ -298,7 +298,7 @@ sensor_iio 0-0049: IIO device registered: name=sensor_iio channels=3 (temp + hum
 
 1. **rmmod/insmod 循环未在阶段脚本中断言**：本阶段检查覆盖注册与数据路径，
    没有验证卸载路径（`devm` 资源释放顺序、缓冲/trigger 解绑）。代码使用全 `devm_*`，
-   理论上安全，但**缺少实测证据**。建议由验证 lane 补一条 `rmmod sensor_iio && insmod` 的检查。
+   理论上安全，但**缺少实测证据**。建议由验证工作树补一条 `rmmod sensor_iio && insmod` 的检查。
 2. **`available_scan_masks` 未设置**：内核允许任意通道组合；本项目只在"三通道全开"下验证过
    布局（stride=16）。只开温度通道时布局会变成 `[temp u16][pad][ts s64]`，用户态程序
    按同一算法仍能算对，但**未实测**。
@@ -309,6 +309,6 @@ sensor_iio 0-0049: IIO device registered: name=sensor_iio channels=3 (temp + hum
    但未与 libiio 工具（`iio_generic_buffer`）交叉验证。
 5. **契约文档需更新**：`docs/11` 阶段 05 节的两处示例命令
    （`configfs/.../sampling_frequency` 路径、`driver/modules.load` 的说法）与 6.6 实际行为不符，
-   已在第四节 P2 说明，需父 agent 修订契约。
-6. **基础设施改动需合并**：本 lane 修改了 `scripts/13-vm-fast-cycle.sh` 与
+   已在第四节 P2 说明，需集成负责人修订契约。
+6. **基础设施改动需合并**：本工作树修改了 `scripts/13-vm-fast-cycle.sh` 与
    `tests/runner/init.sh`（P3 的修复）。合并到主树时应确认与主树正在进行的阶段 03/04 改动不冲突。

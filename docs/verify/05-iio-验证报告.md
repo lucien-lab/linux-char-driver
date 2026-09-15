@@ -1,7 +1,7 @@
 # 阶段 05（IIO 子系统驱动）独立验证报告
 
-> 验证者：独立验证 lane（LANE=05，worktree `/Users/lucien/workspace/self-study/projects/wt-05`，分支 `phase05-iio`）
-> 验证时间：本次会话；宿主 macOS / QEMU TCG(`thread=multi`)-cortex-a72 / `-smp 2`；内核 6.6.156
+> 验证者：独立验证者（WORKTREE=05，worktree `/Users/lucien/workspace/self-study/projects/wt-05`，分支 `phase05-iio`）
+> 验证时间：见文末日志清单；宿主 macOS / QEMU TCG(`thread=multi`)-cortex-a72 / `-smp 2`；内核 6.6.156
 > 内核模式确认：构建前 `grep -m1 '^CONFIG_KCSAN=y' ~/kernel-build/linux-6.6.156/.config` **无输出**（内核已回到普通模式，Image 39 MiB，非 KCSAN 的 51 MiB）
 > 本报告只做**复核**，未改动任何交付源码；仅做临时负控/诊断改动并全部还原（见第四节、第七节）。
 
@@ -107,7 +107,7 @@ smoke 回归（`logs/20260914-134114-05-smoke.log`）：15 项全 PASS（设备�
 - 后果：以该状态重建后 `05-iio` 为 **19 PASS / 3 FAIL**（`logs/20260914-133551-05-05-iio.log`，296/299/300 行 FAIL）。功能通路（sysfs raw/scale、trigger、buffer）全绿，**只有缓冲数据校验红**——很容易被误读为"环境抖动"。
 - 与 `docs/impl/05-iio-实现记录.md` 宣称的 22/22 矛盾。
 - **处理**：验证者将两处改回 `SENSOR_REG_TEMP`/`SENSOR_REG_HUMIDITY`（恢复后文件 SHA256 `02d9d5ef…`），重建后 22/22。日志证据 `logs/20260914-133551-05-05-iio.log`（红）与 `logs/20260914-134111-05-05-iio.log`（绿）。
-- **给父 agent 的建议**：交付前必须有一条"负控标记清零 + 重建全绿"的收尾动作；本类残留建议在 `.gitignore` 之外，用 `grep -rn NEGCTRL` 作为 pre-commit 自检。
+- **给集成负责人的建议**：交付前必须有一条"负控标记清零 + 重建全绿"的收尾动作；本类残留建议在 `.gitignore` 之外，用 `grep -rn NEGCTRL` 作为 pre-commit 自检。
 
 ### S2【低】用户程序把时间戳通道的 `offset` 打印成 0（误导性，且与实现记录不符）
 
@@ -173,15 +173,15 @@ smoke 回归（`logs/20260914-134114-05-smoke.log`）：15 项全 PASS（设备�
 
 ## 五、独立复现结果
 
-命令（LANE=05 固定 `~/lab-05`，与主树并行 lane 隔离）：
+命令（WORKTREE=05 固定 `~/lab-05`，与主树并行工作树隔离）：
 
 ```bash
 WT=/Users/lucien/workspace/self-study/projects/wt-05
 bash $WT/scripts/20-macos-gen-dtb.sh
-limactl shell dev bash -c "LANE=05 TEST=05-iio bash $WT/scripts/13-vm-fast-cycle.sh"
-LANE=05 bash $WT/scripts/21-macos-sync-artifacts.sh
-LANE=05 bash $WT/scripts/22-macos-run-test.sh 05-iio 300
-LANE=05 bash $WT/scripts/22-macos-run-test.sh smoke 180
+limactl shell dev bash -c "WORKTREE=05 TEST=05-iio bash $WT/scripts/13-vm-fast-cycle.sh"
+WORKTREE=05 bash $WT/scripts/21-macos-sync-artifacts.sh
+WORKTREE=05 bash $WT/scripts/22-macos-run-test.sh 05-iio 300
+WORKTREE=05 bash $WT/scripts/22-macos-run-test.sh smoke 180
 ```
 
 | 构建/运行 | 结果 |
@@ -199,7 +199,7 @@ LANE=05 bash $WT/scripts/22-macos-run-test.sh smoke 180
 
 | 偏差 | 位置 | 说明 | 影响 |
 |---|---|---|---|
-| **`sampling_frequency` 路径** | `docs/11` 阶段 05 节示例 `echo 100 > /sys/kernel/config/iio/triggers/hrtimer/inst0/sampling_frequency` | 6.6 中该属性挂在 **trigger 设备**（`drivers/iio/trigger/iio-trig-hrtimer.c:80` `DEVICE_ATTR(sampling_frequency,…)`），configfs 实例目录的 `config_item_type` 只填 `.ct_owner`。往 configfs 路径写会得 `EACCES`（不是 ENOENT）。实现与测试正确地用了 `/sys/bus/iio/devices/triggerN/sampling_frequency`。 | 契约文档错误（实现已绕开），需父 agent 修订 `docs/11` |
+| **`sampling_frequency` 路径** | `docs/11` 阶段 05 节示例 `echo 100 > /sys/kernel/config/iio/triggers/hrtimer/inst0/sampling_frequency` | 6.6 中该属性挂在 **trigger 设备**（`drivers/iio/trigger/iio-trig-hrtimer.c:80` `DEVICE_ATTR(sampling_frequency,…)`），configfs 实例目录的 `config_item_type` 只填 `.ct_owner`。往 configfs 路径写会得 `EACCES`（不是 ENOENT）。实现与测试正确地用了 `/sys/bus/iio/devices/triggerN/sampling_frequency`。 | 契约文档错误（实现已绕开），需集成负责人修订 `docs/11` |
 | **trigger 名字期望** | `docs/11` 阶段 05 节检查项："`trigger*/name` 出现 `hrtimer`" | 实际 `iio_trigger_alloc(NULL, "%s", name)`（`iio-trig-hrtimer.c:137`）使**名字等于 configfs 实例名**，即 `inst0`（不是 `hrtimer`）。测试按 `inst0` 校验，正确。 | 契约文档错误 |
 | `in_temp_input_raw` / `in_temp_input` | `docs/11` 检查项表格 | 实现暴露 `in_temp_raw`（原始）与 `in_temp_input`（processed），命名符合 IIO 惯例；文档措辞含糊，无实质冲突 | 无 |
 | 模块清单文件名 | `docs/11` 写 `driver/modules.load` 或 `tests/phases/05-iio.sh.modules` | 实现用 `tests/phases/05-iio.modules`，符合 `docs/10 §4.3` 的 `tests/phases/<阶段名>.modules` | 无 |
@@ -213,7 +213,7 @@ LANE=05 bash $WT/scripts/22-macos-run-test.sh smoke 180
 3. **大端未验证**：`scan_type.endianness = IIO_CPU`，用户程序有 le/be 分支，但仅在 aarch64 小端验证。
 4. **测试脚本的可诊断性**：`05-iio.sh` 在用户程序失败时只回显 `layout stride=` 一行，`/tmp/iio.txt` 里的逐样本越界信息（stderr）**不打印到串口**，失败时需重建诊断；这是恒真检查之外的"观测缺口"（非正确性问题）。
 5. **测试脚本硬编码期望 `stride=16`**：这是刻意的回归护栏，但若日后合法地改动 `storagebits`（如换 8 位通道），需同步改测试——属于可接受的强断言。
-6. **跨 lane 基础设施改动**：本 lane 修改了 `scripts/13/20/21/22` 与 `tests/runner/init.sh`（模块清单运行期选择、`LANE` 隔离、`-smp 2`/`thread=multi`）。这些是**跨阶段/跨 lane 的公共脚本**，合并到主树时需与主树阶段 03/04 改动对账（实现记录 P0/P3 已说明）。
+6. **跨工作树基础设施改动**：本工作树修改了 `scripts/13/20/21/22` 与 `tests/runner/init.sh`（模块清单运行期选择、`WORKTREE` 隔离、`-smp 2`/`thread=multi`）。这些是**跨阶段/跨工作树的公共脚本**，合并到主树时需与主树阶段 03/04 改动对账（实现记录 P0/P3 已说明）。
 7. **实现记录的一处证据不实**：见 S2（`in_timestamp offset=8` 与实际 `offset=0` 不符）。
 
 > 关于 KCSAN：本次最终日志与所有负控/诊断日志中**均未出现 KCSAN 报告**（`grep -i KCSAN` 无命中）。内核已回到普通模式，本阶段结论不依赖 KCSAN 内核。
@@ -250,7 +250,7 @@ LANE=05 bash $WT/scripts/22-macos-run-test.sh smoke 180
 
 ---
 
-## 十、给父 agent / 实现者的整改清单
+## 十、给集成负责人 / 实现者的整改清单
 
 | 优先级 | 事项 | 位置 |
 |---|---|---|
@@ -263,7 +263,7 @@ LANE=05 bash $WT/scripts/22-macos-run-test.sh smoke 180
 
 ---
 
-## 附：本次会话产生的日志清单
+## 附：本次验证产生的日志清单
 
 | 用途 | 日志 |
 |---|---|

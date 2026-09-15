@@ -211,7 +211,7 @@ ok 1 sensor_calc
 而 `shm_seq_changes=200` 说明写者确实在发布。
 
 **根因**：该检查依赖"读者与写者真的并行执行"。放大器窗口占空比是 1ms/10ms = 10%，
-当宿主 CPU 被其它任务（并行 lane、内核构建）占满、读者线程被调度走时，
+当宿主 CPU 被其它任务（并行工作树、内核构建）占满、读者线程被调度走时，
 一次运行可能整段都撞不上窗口。
 
 **解决**：把注入窗口提到 5ms（占空比 50%）并写进注释；
@@ -263,7 +263,7 @@ bash scripts/22-macos-run-test.sh smoke 180
    属于可选扩展（当前不做，避免与 runtime PM 的交互引入未验证路径）。
 3. **KUnit 未覆盖 `sensor_shm_publish()` 的序号协议**：该函数有副作用（写共享内存、`udelay`、自旋锁），
    不属于纯逻辑，因此留在 QEMU 集成测试（阶段 03 的放大器与 KCSAN）覆盖。
-4. **建议验证 lane 关注**：
+4. **建议验证工作树关注**：
    * 删掉 `release()` 里的 `put_autosuspend` → "反复开关后仍能自动挂起"必须 FAIL；
    * 让 `suspend` 不停 `hrtimer` → "挂起期间采样冻结"必须 FAIL；
    * 在 `sensor_calc.h` 里把 `0x0800` 的符号处理写错 → KUnit 必须 FAIL；

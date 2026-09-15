@@ -1,10 +1,10 @@
 # 阶段 04 验证报告：sysfs 设备参数 + debugfs 运行统计（独立复核）
 
-- 验证者：独立验证 agent（lane `04`，构建目录 `~/lab-04`）
+- 验证者：独立验证者（工作树 `04`，构建目录 `~/lab-04`）
 - 交付树：`/Users/lucien/workspace/self-study/projects/wt-04`（HEAD = `eacecfa`）
 - 本文档是本次验证**唯一**在交付树里写入的文件；`driver/`、`tests/`、`user/` 源码 sha256 与验证前一致（见第七节）。
 - 负控实验全部在隔离副本 `/Users/lucien/nc04-sandbox`（= 交付树 `driver/user/tests/dts/scripts` 的 `cp -a` 副本）
-  中完成，构建目录 `~/lab-04nc`，与交付 lane 隔离。**注**：任务书建议的 `/tmp/nc04` 在 Lima 虚拟机里不可见
+  中完成，构建目录 `~/lab-04nc`，与交付工作树隔离。**注**：任务书建议的 `/tmp/nc04` 在 Lima 虚拟机里不可见
   （`/tmp` 是 VM 本地 tmpfs，宿主 `/tmp` 没有挂进 VM），因此改用宿主 `$HOME` 下的独立目录，
   目的与约束（不改交付树源码）完全一致。
 
@@ -32,10 +32,10 @@
 命令（全部用官方脚本，未自拼 QEMU）：
 
 ```bash
-LANE=04 bash 20-macos-gen-dtb.sh                     # 新 worktree 首次
-limactl shell dev bash -c 'LANE=04 bash …/13-vm-fast-cycle.sh'
-LC_ALL=C LANE=04 bash 21-macos-sync-artifacts.sh
-LC_ALL=C LANE=04 bash 22-macos-run-test.sh <阶段> <超时>
+WORKTREE=04 bash 20-macos-gen-dtb.sh                     # 新 worktree 首次
+limactl shell dev bash -c 'WORKTREE=04 bash …/13-vm-fast-cycle.sh'
+LC_ALL=C WORKTREE=04 bash 21-macos-sync-artifacts.sh
+LC_ALL=C WORKTREE=04 bash 22-macos-run-test.sh <阶段> <超时>
 ```
 
 | 阶段 | 项数 | 结果 | 日志文件 | 备注 |
@@ -83,7 +83,7 @@ debugfs `stats`/`ring` 里的 `ring_capacity=85`（L305、L325）与 sysfs 的 8
 ### 2.3 边界与非法值（7 项）
 
 驱动侧单一判定/单一生效：`sensor_interval_valid()` `driver/sensor_char.c:756`、`sensor_apply_interval()` `:762`，
-sysfs store 用 `:959/962`，ioctl 用 `:800/802` —— 与父 agent 裁定 1（下限统一 1ms）一致（代码核对）。
+sysfs store 用 `:959/962`，ioctl 用 `:800/802` —— 与集成负责人裁定 1（下限统一 1ms）一致（代码核对）。
 
 | # | 检查项 | 预期 | 实测 | 证据 |
 |---|---|---|---|---|
@@ -157,12 +157,12 @@ corner 核对：0x0001 = 连续转换使能位，与 `probe` 的 `regmap_write(.
 
 ## 三、负控实验（第 3 项任务）
 
-全部在 `/Users/lucien/nc04-sandbox` 隔离副本 + `LANE=04nc`（构建目录 `~/lab-04nc`）里做，
+全部在 `/Users/lucien/nc04-sandbox` 隔离副本 + `WORKTREE=04nc`（构建目录 `~/lab-04nc`）里做，
 构建/同步/运行仍走 `13/21/22` 的副本（非自拼命令）。交付树源码 sha256 未变（第七节）。
 
 | 编号 | 篡改内容（仅副本） | 运行 | 结果 | 日志 | 结论 |
 |---|---|---|---|---|---|
-| 基线 | 无（交付树原样） | `04-sysfs-debugfs` | PASS 42/42 | 交付 `logs/20260914-140902-04-04-sysfs-debugfs.log` | 参照组（lanes 隔离，结论与副本构建一致） |
+| 基线 | 无（交付树原样） | `04-sysfs-debugfs` | PASS 42/42 | 交付 `logs/20260914-140902-04-04-sysfs-debugfs.log` | 参照组（工作树隔离，结论与副本构建一致） |
 | 基线′ | 副本原样（仅自写探针） | `nc-remove-probe` | PASS 13/13，`STILL-PRESENT`/`already present` 出现 0 次 | `nc04-sandbox/logs/20260914-141232-04nc-nc-remove-probe.log` | 探针本身有效（不是恒 FAIL） |
 | **NC-A** | `ring_capacity_show` 返回硬编码 `64u`（`driver/sensor_char.c` 的 `sensor_ring_capacity(sd)` → `64u`） | `04-sysfs-debugfs` | **PASS 42/42（没有 FAIL）** | `nc04-sandbox/logs/20260914-141252-04nc-04-sysfs-debugfs.log` | **真实覆盖缺口**：sysfs 显示 64 而 debugfs 同时显示 85，矛盾在日志里肉眼可见，却没有任何检查项抓住 |
 | **NC-C** | 删掉 `interval_ms_store` 里的 `if (!sensor_interval_valid(ms)) return -EINVAL;`（`driver/sensor_char.c:959`） | `04-sysfs-debugfs` | **FAIL 4**：`0ms 被拒绝（值保持不变）` 期望 60000 实际 **0**；`0ms 报错信息含 nvalid` 未命中；`60001ms 被拒绝` 实际 **60001**；`非数字被拒绝` 实际**60001** | `nc04-sandbox/logs/20260914-141309-04nc-04-sysfs-debugfs.log` | 边界检查**有效**，且不是恒真：篡改后值真的被改成非法值并被逐条抓出 |
@@ -201,11 +201,11 @@ NC-B 的现场证据（`…-141328-04nc-nc-remove-probe.log`，加强探针前�
   本机 4 次运行：1 次 PASS（`odd_seen=164`），3 次 FAIL（`odd_seen=0`，其中 1 次连带 `mmap_retries=0`、
   用户态程序退出码 1，一次跑出 3 个 FAIL）。
 - 证据：`logs/20260914-140913/141027/141211-04-03-ringbuffer-mmap.log`（FAIL）vs
-  `logs/20260914-141039-04-03-ringbuffer-mmap.log`（PASS）；跨 lane 历史日志里该 FAIL 出现在
+  `logs/20260914-141039-04-03-ringbuffer-mmap.log`（PASS）；跨工作树历史日志里该 FAIL 出现在
   **18 / 83** 份 03 日志中（约 22%），说明是长期存在的间歇性检查，不只是本轮环境噪声。
 - 判定：与阶段 04 改动无关（04 只新增 sysfs/debugfs 与 `interval` 抽取；放大器路径 `driver/sensor_char.c:319`
   的 `udelay` 未被改动）。根因是"读方必须恰好落在 1ms 奇数窗口内"的采样式断言，在宿主 CPU 争用
-  （本机同时有多个 lane 在跑 QEMU）下读者 vCPU 会被剥离该窗口。
+  （本机同时有多个工作树在跑 QEMU）下读者 vCPU 会被剥离该窗口。
 - 建议（不属阶段 04 范围）：把断言改为"`retries>0` 或 `odd_seen>0` 二者至少一个"，或把窗口放大到 5ms 再重试。
 
 ### S2（中，测试真实覆盖缺口）`ring_capacity` 断言过宽 → 硬编码 64 不被发现
@@ -349,5 +349,5 @@ cb6f8a6caf5bebf82b17208c1b2488db9ab8f7e7e5f2d8ada70d5a10bd8e5da4  tests/runner/l
 ## 九、验证环境
 
 - macOS 宿主 + Lima VM `dev`（aarch64）；内核树 `~/kernel-build/linux-6.6.156`，`CONFIG_KCSAN` 未开启（构建前已确认），未修改内核树。
-- lane 04：构建 `~/lab-04`，产物 `artifacts/`，日志 `logs/`；负控 lane 04nc：`~/lab-04nc`，产物/日志在 `/Users/lucien/nc04-sandbox/`。
+- 工作树 04：构建 `~/lab-04`，产物 `artifacts/`，日志 `logs/`；负控工作树 04nc：`~/lab-04nc`，产物/日志在 `/Users/lucien/nc04-sandbox/`。
 - 全部测试通过 `scripts/13 → scripts/21 → scripts/22` 三段式执行，未自行拼接 QEMU 命令。

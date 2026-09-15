@@ -1059,15 +1059,15 @@ WT=/Users/lucien/workspace/self-study/projects/wt-05
 # ① 设备树（含 virt-i2c 下的 sensor@48 / sensor@49）
 bash $WT/scripts/20-macos-gen-dtb.sh
 
-# ② 构建模块 + 用户态程序 + initramfs（VM 内，约 10 秒；本 lane 固定 LANE=05 → ~/lab-05）
-limactl shell dev bash -c "LANE=05 TEST=05-iio bash $WT/scripts/13-vm-fast-cycle.sh"
+# ② 构建模块 + 用户态程序 + initramfs（VM 内，约 10 秒；本工作树固定 WORKTREE=05 → ~/lab-05）
+limactl shell dev bash -c "WORKTREE=05 TEST=05-iio bash $WT/scripts/13-vm-fast-cycle.sh"
 
 # ③ 产物拷回宿主
-LANE=05 bash $WT/scripts/21-macos-sync-artifacts.sh
+WORKTREE=05 bash $WT/scripts/21-macos-sync-artifacts.sh
 
 # ④ 阶段测试 + 回归（QEMU，TCG / cortex-a72 / -smp 2）
-LANE=05 bash $WT/scripts/22-macos-run-test.sh 05-iio 300
-LANE=05 bash $WT/scripts/22-macos-run-test.sh smoke  180
+WORKTREE=05 bash $WT/scripts/22-macos-run-test.sh 05-iio 300
+WORKTREE=05 bash $WT/scripts/22-macos-run-test.sh smoke  180
 ```
 
 预期结果（本阶段最终 clean 构建的实测）：

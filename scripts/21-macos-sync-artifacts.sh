@@ -14,12 +14,12 @@ PROJ=$PWD
 VM=${VM:-dev}
 
 GUEST_HOME=$(limactl shell "$VM" bash -c 'echo $HOME')
-LANE=${LANE:-main}
+WORKTREE=${WORKTREE:-main}
 mkdir -p "$PROJ/artifacts"
 
 echo "==> 从 $VM:$GUEST_HOME/lab/out/ 同步产物到 artifacts/"
 for f in initramfs.cpio.gz Image i2c-stub.ko; do
-    if limactl copy "$VM:$GUEST_HOME/lab-$LANE/out/$f" "$PROJ/artifacts/$f" 2>/dev/null; then
+    if limactl copy "$VM:$GUEST_HOME/lab-$WORKTREE/out/$f" "$PROJ/artifacts/$f" 2>/dev/null; then
         printf '  %-22s %s\n' "$f" "$(du -h "$PROJ/artifacts/$f" | cut -f1)"
     else
         echo "  !! 同步失败（不存在？）: $f"

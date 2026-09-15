@@ -18,12 +18,12 @@
 set -uo pipefail
 
 # PROJ 默认取"脚本自身所在的项目目录"：这样在 git worktree 里执行时会自动指向该 worktree，
-# 而不是硬编码的主树 —— 否则并行 lane 会拿别人的源码构建，产生完全错误的结论（阶段 05 踩过）。
+# 而不是硬编码的主树 —— 否则并行工作树会拿别人的源码构建，产生完全错误的结论（阶段 05 踩过）。
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 PROJ=${PROJ:-$(cd "$SCRIPT_DIR/.." && pwd)}
 KVER=${KVER:-6.6.156}
 KSRC="$HOME/kernel-build/linux-$KVER"
-LAB="$HOME/lab-${LANE:-main}"
+LAB="$HOME/lab-${WORKTREE:-main}"
 OUT="$LAB/out"
 TEST=${TEST:-smoke}
 

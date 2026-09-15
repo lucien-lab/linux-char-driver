@@ -1,7 +1,7 @@
 # 阶段 06 验证报告：Runtime PM + KUnit（独立复核）
 
 > 复核对象：commit `d3e9445`（阶段06：Runtime PM + KUnit 内核单元测试，31 项检查，六套件合计 163 项全绿）
-> 判定者：独立验证 agent（LANE=06，构建目录 `~/lab-06`）
+> 判定者：独立验证者（WORKTREE=06，构建目录 `~/lab-06`）
 > 主机：macOS（Apple Silicon），bash 3.2，QEMU TCG/cortex-a72，内核 6.6.156
 > 复核日期：2026-09-14
 
@@ -23,7 +23,7 @@ suspend 真停采样、KUnit 边界覆盖均已实测确认；六套测试独立
 
 复核时（2026-09-14 14:06）`git status --short` 显示交付工作树**无被跟踪文件修改**，四个关键文件与 `HEAD` 一致：
 
-| 文件 | sha256（HEAD = wt-06 工作树 = 隔离基线，三者相同） |
+| 文件 | sha256（HEAD = wt-06 = 隔离基线，三者相同） |
 |---|---|
 | `driver/sensor_char.c` | `8c78fd37454d8e41ee3e8dca658ec85257a9e7880efed305d99560be0bfb5d1e` |
 | `driver/sensor_calc.h` | `3182b5a94538510ff2710ab282070eb2a9841129f36e298208e96a39ccb21f0a` |
@@ -31,12 +31,12 @@ suspend 真停采样、KUnit 边界覆盖均已实测确认；六套测试独立
 | `tests/phases/06-runtime-pm-kunit.sh` | `3c1b676d94811716c31930fa34be83cf9117752fcf12828bd09983c53410e78c` |
 
 **说明**：
-* **我（验证 agent）从未编辑过 wt-06 下的任何被跟踪源文件**（`driver/`、`tests/`、`user/` 全部只读）。
+* **我（独立验证者）从未编辑过 wt-06 下的任何被跟踪源文件**（`driver/`、`tests/`、`user/` 全部只读）。
   我对 wt-06 的唯一写入是本报告 `docs/verify/06-runtime-pm-kunit-验证报告.md`，以及把负控日志拷进
   `logs/`（`logs/*.log` 已被 `.gitignore` 忽略，不影响交付树）。
-* 复核过程中观察到：13:55 我完成基线运行后，`driver/sensor_char.c` 于 **13:56:11 / 13:57:22** 被**另一个并发 agent**
+* 复核过程中观察到：13:55 我完成基线运行后，`driver/sensor_char.c` 于 **13:56:11 / 13:57:22** 被**并行的另一条工作树**
   改写成 `/* NC-A: ... */`、随后又改成 `/* NC-C/NC-D: ... */`（注释掉 release 的 put / 去掉周期上界 / 改 ring_capacity）。
-  这些改动**不是我所为**（我的 edit 调用因文本不匹配直接报错返回）。父 agent 已声明由其 `git checkout` 恢复；
+  这些改动**不是我所为**（我的修改因文本不匹配未生效）。集成负责人已声明由其 `git checkout` 恢复；
   至 14:06 工作树已干净。为保证负控实验与交付版互不干扰，**我的三个负控实验全部在与交付树隔离的副本里完成**
   （详见第 4 节）。
 
@@ -44,11 +44,11 @@ suspend 真停采样、KUnit 边界覆盖均已实测确认；六套测试独立
 
 ## 2. 独立复现：六套测试（同一份产物，顺序执行）
 
-构建命令（严格按本 lane 约定）：
+构建命令（严格按本工作树约定）：
 ```bash
-limactl shell dev bash -c 'LANE=06 bash /Users/lucien/workspace/self-study/projects/wt-06/scripts/13-vm-fast-cycle.sh'
-LANE=06 bash /Users/lucien/workspace/self-study/projects/wt-06/scripts/21-macos-sync-artifacts.sh
-LC_ALL=C LANE=06 bash /Users/lucien/workspace/self-study/projects/wt-06/scripts/22-macos-run-test.sh <阶段> 300
+limactl shell dev bash -c 'WORKTREE=06 bash /Users/lucien/workspace/self-study/projects/wt-06/scripts/13-vm-fast-cycle.sh'
+WORKTREE=06 bash /Users/lucien/workspace/self-study/projects/wt-06/scripts/21-macos-sync-artifacts.sh
+LC_ALL=C WORKTREE=06 bash /Users/lucien/workspace/self-study/projects/wt-06/scripts/22-macos-run-test.sh <阶段> 300
 ```
 > 说明：`22-macos-run-test.sh` 在 macOS 自带 bash 3.2 + `LANG=zh_CN.UTF-8` 下会因 `$f（`（多字节紧跟变量名）
 > 被误解析而报 `f�: unbound variable`。加 `LC_ALL=C` 即可正常运行；这不影响脚本逻辑与测试结论。
@@ -129,8 +129,8 @@ open 后的 active 判定 `sleep 1`（resume 在 `pm_runtime_resume_and_get()` �
 
 ## 4. 负控实验（3 个，全部在隔离副本中执行）
 
-**隔离方式**（应父 agent 指示）：把交付树复制到 `/Users/lucien/verify-06nc/`（含 `driver/user/tests/scripts/dts/docs`），
-用 `LANE=06nc` 构建到 `~/lab-06nc`，用副本自带的 `scripts/22-macos-run-test.sh` 运行、日志写副本的 `logs/`。
+**隔离方式**（应集成负责人指示）：把交付树复制到 `/Users/lucien/verify-06nc/`（含 `driver/user/tests/scripts/dts/docs`），
+用 `WORKTREE=06nc` 构建到 `~/lab-06nc`，用副本自带的 `scripts/22-macos-run-test.sh` 运行、日志写副本的 `logs/`。
 **实验全程不触碰 `/Users/lucien/workspace/self-study/projects/wt-06` 的源码**。
 隔离副本的三份被改文件在实验前/实验后都来自 `git show HEAD:`，**sha256 与交付版逐字节相同**（见第 1 节表格）。
 每次实验后都把 `sensor_char.c` / `sensor_calc.h` 从 `.baseline/` 还原并重跑确认全绿（见实验 4）。
@@ -201,7 +201,7 @@ NC-B2 因 `resume()` 里 `enable_irq()` 没有配对的 `disable_irq()`，内核
 **【低】5 条用例名检查可被 `not ok` 蒙混**（同 3.1）：正则未锚定行首。建议锚定 `^\s*ok [0-9]+ <name>$`。
 
 **【信息】`remove()` 顺序**：`pm_runtime_disable()`（`:1537`）在 `hrtimer_cancel`（`:1539`）/`free_irq`（`:1540`）之前，
-偏离契约原文但父 agent 已裁定接受。理由（disable 同步等待在途 PM 回调，避免 resume 把 hrtimer 重启）成立，
+偏离契约原文但集成负责人已裁定接受。理由（disable 同步等待在途 PM 回调，避免 resume 把 hrtimer 重启）成立，
 复核认可。注意：若 remove 时设备处于 runtime-suspended，则 irq 处于 `disable_irq` 状态就被 `free_irq`；
 本项目 QEMU 实测（阶段 03 的 `rmmod/insmod` 两轮）无 `Unbalanced` 告警，但"带 disable_irq 计数的 free_irq"
 在真机上属需要确认的边角，列为遗留疑点。
@@ -233,7 +233,7 @@ NC-B2 因 `resume()` 里 `enable_irq()` 没有配对的 `disable_irq()`，内核
 | `dev_pm_ops` 用 `SET_RUNTIME_PM_OPS(suspend, resume, NULL)` | `sensor_char.c:1300-1302`，挂到 `i2c_driver.driver.pm`（`:1589`） | ✅ |
 | probe: `pm_runtime_enable` + `set_autosuspend_delay(1000)` + `use_autosuspend` | `:1484-1486`（另有 `get_noresume`/`set_active`/`mark_last_busy`/`put_autosuspend`） | ✅ |
 | open 取引用 / release 归还 | `resume_and_get` `:513`；`mark_last_busy`+`put_autosuspend` `:549-550` | ✅ |
-| remove 里 `pm_runtime_disable` | `:1537`（顺序前置，父 agent 已裁定） | ✅（偏差已批准） |
+| remove 里 `pm_runtime_disable` | `:1537`（顺序前置，集成负责人已裁定） | ✅（偏差已批准） |
 | suspend 停 hrtimer + 关中断，resume 重启，均有日志 | `:1269-1275` / `:1292-1296`，日志实测存在 | ✅ |
 | KUnit 覆盖 0x0000/0x07FF/0x0800/0x0FFF、非法周期、下标回绕 | `sensor_kunit.c` 5 用例（边界/工作区间/高4位/周期边界/回绕） | ✅ |
 | 用例名有意义 | `sensor_raw_to_milli_boundaries` 等 | ✅ |
@@ -243,7 +243,7 @@ NC-B2 因 `resume()` 里 `enable_irq()` 没有配对的 `disable_irq()`，内核
 **契约文字与现实的偏差（均已裁定/记录，非缺陷）**：
 1. PM sysfs 在 i2c 硬件设备 `0-0048` 上，不在 `/sys/class/sensor_char/sensor0/power/`（契约末段已修正）。
 2. 契约写 KUnit 输出 `ok 1 -`，内核 6.6 实际是 KTAP v1 `ok 1 <name>`（无 `-`）；脚本按现实匹配。
-3. remove 顺序（disable 在前）；阶段 04 测试脚本显式持有 fd；均由父 agent 裁定接受。
+3. remove 顺序（disable 在前）；阶段 04 测试脚本显式持有 fd；均由集成负责人裁定接受。
 
 ---
 
@@ -255,7 +255,7 @@ NC-B2 因 `resume()` 里 `enable_irq()` 没有配对的 `disable_irq()`，内核
 4. **负温度链路无端到端覆盖**（低）：KUnit 覆盖了 12 位补码函数，但 `virt_i2c` 只产生正温度，
    `regmap→换算→ioctl/IIO` 的负温度路径没有集成测试。实现文档已声明该边界。
 5. **`remove()` 时已挂起→带 disable 计数 free_irq**（信息）：QEMU 实测无告警，真机需确认。
-6. **并发写者**：复核期间 wt-06 被兄弟 agent 临时改写又恢复，`docs/kb/06-…-知识点.md` 在 14:05 仍在被写入
+6. **并发写者**：复核期间 wt-06 被兄弟工作树临时改写又恢复，`docs/kb/06-…-知识点.md` 在 14:05 仍在被写入
    （当前 82KB、untracked）。交付前请确认该文件内容完整且已纳入最终提交。
 
 ---
