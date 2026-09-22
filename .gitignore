@@ -15,3 +15,11 @@ user/sensor_test
 user/*.bin
 # QEMU 串口日志（作为验证证据保留在 logs/，但体积较大时可按需清理）
 logs/*.log
+
+# ---- 本地开发流程产物（不属于交付物，严禁入库）----
+# 开发编排脚本（本地流程工具，非项目代码）
+orchestration/
+# 并行开发工作树（由 git worktree 管理，内含 ~43MB 构建产物/工作树，不归主树跟踪）
+wt-*/
+# 负控实验的隔离副本
+sandboxes/
