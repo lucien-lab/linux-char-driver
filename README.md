@@ -1,6 +1,6 @@
 # Linux 字符设备驱动开发与 I2C 传感器数据采集
 
-[![CI](https://github.com/sensible1091/linux-char-driver/actions/workflows/ci.yml/badge.svg)](https://github.com/sensible1091/linux-char-driver/actions/workflows/ci.yml)
+[![CI](https://github.com/lucien-lab/linux-char-driver/actions/workflows/ci.yml/badge.svg)](https://github.com/lucien-lab/linux-char-driver/actions/workflows/ci.yml)
 ![Platform](https://img.shields.io/badge/platform-ARM64%20%7C%20Linux%206.6.156-blue)
 ![Kernel](https://img.shields.io/badge/kernel%20module-C%20%2F%20GPL--2.0-informational)
 [![License](https://img.shields.io/badge/license-GPL--2.0-green)](LICENSE)
