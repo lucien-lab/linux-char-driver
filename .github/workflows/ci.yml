@@ -92,17 +92,23 @@ jobs:
       - name: README 本地链接可达性
         run: |
           set -euo pipefail
-          fail=0
+          rm -f /tmp/deadlinks
           {
-            # markdown 行内链接中的相对路径（排除 http(s)）
+            # ① markdown 行内链接中的相对路径（排除 http(s)）
             grep -oE '\]\([^)]*\)' README.md | sed -E 's/^\]\(//; s/\)$//' \
               | grep -vE '^(https?:|#|mailto:)' | sed 's/#.*$//' | grep -v '^$'
-            # 反引号包裹、且带目录的仓库内文件路径（同时支持中文文件名）
+            # ② 反引号包裹、带扩展名的仓库内文件（同时支持中文文件名）
             grep -oE '`[^`[:space:]]*/[^`[:space:]]*\.(md|c|h|sh|inc|dtsi|yml|txt)`' README.md \
               | tr -d '`'
+            # ③ 反引号包裹的代码/文档目录引用（可能省略扩展名，如 `docs/05`）
+            #    补齐 ② 的盲区：不带扩展名的坏引用以前会被静默跳过
+            grep -oE '`(docs|scripts|driver|user|tests|dts)/[^`[:space:]]+`' README.md \
+              | tr -d '`' | grep -v '/$'
           } | sort -u | while read -r p; do
             if [ -e "$p" ]; then
               echo "OK   $p"
+            elif compgen -G "${p}*" >/dev/null 2>&1; then
+              echo "OK   $p  （前缀匹配）"
             else
               echo "断链 $p"
               echo "$p" >> /tmp/deadlinks

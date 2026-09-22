@@ -1,0 +1,2049 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Linux ARM64 字符设备驱动开发 · 初学者教程</title>
+<style>
+/* ============================ 打印设置 ============================ */
+@page {
+  size: A4;
+  margin: 18mm 16mm 16mm 16mm;
+  @bottom-center { content: counter(page) " / " counter(pages); }
+}
+@page :first { margin: 0; }
+
+/* ============================ 基础排版 ============================ */
+:root {
+  --ink:      #1a1a1a;
+  --ink-soft: #555;
+  --line:     #d0d7de;
+  --line-soft:#e8ecf0;
+  --bg-code:  #f6f8fa;
+  --accent:   #0b5394;
+  --warn:     #8a4b00;
+  --danger:   #9c1c1c;
+  --good:     #155724;
+  --bg-warn:  #fff8e6;
+  --bg-danger:#fdf0f0;
+  --bg-good:  #f0f8f2;
+  --bg-tip:   #eef4fb;
+}
+* { box-sizing: border-box; }
+
+html { -webkit-text-size-adjust: 100%; }
+
+body {
+  margin: 0;
+  color: var(--ink);
+  background: #fff;
+  font-family: "PingFang SC", "Hiragino Sans GB", "Source Han Sans SC",
+               "Noto Sans CJK SC", "Microsoft YaHei", system-ui, -apple-system,
+               "Helvetica Neue", Arial, sans-serif;
+  font-size: 15px;
+  line-height: 1.75;
+  text-rendering: optimizeLegibility;
+}
+
+.page-wrap { max-width: 860px; margin: 0 auto; padding: 40px 28px 80px; }
+
+/* ============================ 封面 ============================ */
+.cover {
+  height: 100vh;
+  min-height: 640px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 0 14%;
+  border-bottom: 1px solid var(--line);
+  page-break-after: always;
+  break-after: page;
+}
+.cover .kicker {
+  font-size: 13px; letter-spacing: .22em; text-transform: uppercase;
+  color: var(--accent); font-weight: 600; margin-bottom: 22px;
+}
+.cover h1 {
+  font-size: 40px; line-height: 1.28; margin: 0 0 18px;
+  font-weight: 700; letter-spacing: -.01em;
+}
+.cover .sub { font-size: 17px; color: var(--ink-soft); margin: 0 0 30px; line-height: 1.7; }
+.cover .rule { width: 64px; height: 3px; background: var(--accent); margin: 0 0 30px; }
+.cover .meta { font-size: 13.5px; color: var(--ink-soft); line-height: 2; }
+.cover .meta b { color: var(--ink); font-weight: 600; }
+
+/* ============================ 标题层级 ============================ */
+h1, h2, h3, h4 { font-weight: 700; line-height: 1.35; color: var(--ink); }
+
+h1 {
+  font-size: 27px; margin: 0 0 26px; padding-bottom: 12px;
+  border-bottom: 2px solid var(--ink);
+  page-break-before: always; break-before: page;
+  page-break-after: avoid; break-after: avoid;
+}
+h1.no-break { page-break-before: auto; break-before: auto; }
+
+h2 {
+  font-size: 20px; margin: 40px 0 14px;
+  padding-left: 12px; border-left: 4px solid var(--accent);
+  page-break-after: avoid; break-after: avoid;
+}
+h3 {
+  font-size: 16.5px; margin: 28px 0 10px; color: #111;
+  page-break-after: avoid; break-after: avoid;
+}
+h4 {
+  font-size: 14.5px; margin: 20px 0 8px; color: var(--ink-soft);
+  page-break-after: avoid; break-after: avoid;
+}
+
+p { margin: 0 0 13px; }
+ul, ol { margin: 0 0 14px; padding-left: 24px; }
+li { margin-bottom: 6px; }
+li > ul, li > ol { margin-top: 6px; margin-bottom: 4px; }
+
+strong { font-weight: 700; }
+em { font-style: normal; background: #fff3bf; padding: 0 3px; border-radius: 2px; }
+
+a { color: var(--accent); text-decoration: none; border-bottom: 1px solid #b9d1ea; }
+hr { border: none; border-top: 1px solid var(--line); margin: 34px 0; }
+
+/* ============================ 代码 ============================ */
+code {
+  font-family: "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: .875em;
+  background: var(--bg-code);
+  border: 1px solid var(--line-soft);
+  border-radius: 3px;
+  padding: 1px 5px;
+  white-space: nowrap;
+}
+pre {
+  background: var(--bg-code);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--accent);
+  border-radius: 4px;
+  padding: 13px 15px;
+  overflow-x: auto;
+  font-size: 12.6px;
+  line-height: 1.62;
+  margin: 0 0 16px;
+  page-break-inside: avoid; break-inside: avoid;
+  -webkit-print-color-adjust: exact; print-color-adjust: exact;
+}
+pre code {
+  background: none; border: none; padding: 0; font-size: inherit;
+  white-space: pre;
+}
+pre.plain { border-left-color: var(--ink-soft); }
+pre.tree  { border-left-color: #6a737d; font-size: 12.2px; }
+
+/* 代码块内的高亮 */
+.cm  { color: #6a737d; font-style: italic; }   /* 注释 */
+.kw  { color: #a626a4; }                        /* 关键字 */
+.fn  { color: #4078f2; }                        /* 函数 */
+.st  { color: #50a14f; }                        /* 字符串 */
+.nm  { color: #b76b00; }                        /* 数字/宏 */
+.hl  { background: #fff8d6; display: inline-block; width: 100%; }
+
+/* ============================ 表格 ============================ */
+table {
+  width: 100%; border-collapse: collapse; margin: 0 0 18px;
+  font-size: 13.4px; line-height: 1.6;
+  page-break-inside: avoid; break-inside: avoid;
+}
+th, td { border: 1px solid var(--line); padding: 7px 10px; text-align: left; vertical-align: top; }
+th {
+  background: #f0f3f6; font-weight: 700; white-space: nowrap;
+  -webkit-print-color-adjust: exact; print-color-adjust: exact;
+}
+tbody tr:nth-child(even) td { background: #fafbfc; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+td code, th code { white-space: nowrap; }
+table.tight td, table.tight th { padding: 5px 8px; font-size: 12.8px; }
+
+/* ============================ 提示框 ============================ */
+.box {
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 12px 15px;
+  margin: 0 0 18px;
+  font-size: 14px;
+  page-break-inside: avoid; break-inside: avoid;
+  -webkit-print-color-adjust: exact; print-color-adjust: exact;
+}
+.box .t { font-weight: 700; display: block; margin-bottom: 5px; font-size: 13.6px; }
+.box p:last-child, .box ul:last-child, .box ol:last-child { margin-bottom: 0; }
+.box.tip    { background: var(--bg-tip);    border-color: #b8d4ee; border-left: 4px solid var(--accent); }
+.box.tip .t    { color: var(--accent); }
+.box.warn   { background: var(--bg-warn);   border-color: #f0d48a; border-left: 4px solid var(--warn); }
+.box.warn .t   { color: var(--warn); }
+.box.danger { background: var(--bg-danger); border-color: #f0b8b8; border-left: 4px solid var(--danger); }
+.box.danger .t { color: var(--danger); }
+.box.good   { background: var(--bg-good);   border-color: #b4dcc0; border-left: 4px solid var(--good); }
+.box.good .t   { color: var(--good); }
+
+/* ============================ 目录 ============================ */
+.toc { page-break-after: always; break-after: page; }
+.toc h2 { border: none; padding: 0; margin: 0 0 20px; font-size: 22px; }
+.toc ol { list-style: none; padding: 0; margin: 0; counter-reset: toc; }
+.toc > ol > li {
+  counter-increment: toc;
+  margin: 0 0 6px; font-size: 15px; font-weight: 600;
+  padding-left: 0;
+}
+.toc a { border: none; color: var(--ink); }
+.toc ol ol { list-style: none; padding-left: 22px; margin: 4px 0 12px; }
+.toc ol ol li { font-weight: 400; font-size: 13.6px; color: var(--ink-soft); margin-bottom: 3px; }
+.toc .lead { font-size: 14px; color: var(--ink-soft); margin-bottom: 24px; }
+
+/* ============================ 其它组件 ============================ */
+.lead-in { font-size: 15.5px; color: var(--ink-soft); margin-bottom: 22px; }
+.tag {
+  display: inline-block; font-size: 11.5px; font-weight: 700;
+  padding: 1px 7px; border-radius: 10px; margin-right: 6px;
+  border: 1px solid var(--line); background: #f0f3f6; color: var(--ink-soft);
+  vertical-align: middle;
+}
+.tag.p1 { background: #e7f0fb; border-color: #b8d4ee; color: var(--accent); }
+.tag.ok { background: var(--bg-good); border-color: #b4dcc0; color: var(--good); }
+.tag.no { background: var(--bg-danger); border-color: #f0b8b8; color: var(--danger); }
+
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 18px; }
+.grid2 > * { margin-bottom: 0; }
+@media print { .grid2 { display: block; } .grid2 > * { margin-bottom: 14px; } }
+
+.kv { font-size: 13.6px; }
+.kv dt { font-weight: 700; margin-top: 9px; }
+.kv dd { margin: 2px 0 0 0; color: var(--ink-soft); }
+
+.steps { counter-reset: st; list-style: none; padding-left: 0; }
+.steps > li {
+  counter-increment: st; position: relative;
+  padding-left: 34px; margin-bottom: 12px;
+}
+.steps > li::before {
+  content: counter(st); position: absolute; left: 0; top: 1px;
+  width: 22px; height: 22px; border-radius: 50%;
+  background: var(--accent); color: #fff;
+  font-size: 12px; font-weight: 700; line-height: 22px; text-align: center;
+  -webkit-print-color-adjust: exact; print-color-adjust: exact;
+}
+
+.footnote { font-size: 12.6px; color: var(--ink-soft); border-top: 1px solid var(--line-soft); padding-top: 10px; margin-top: 26px; }
+
+.noprint {
+  background: #222; color: #fff; padding: 10px 16px; font-size: 13px;
+  border-radius: 4px; margin-bottom: 22px;
+}
+@media print { .noprint { display: none !important; } }
+</style>
+</head>
+<body>
+<div class="page-wrap">
+
+<div class="noprint">
+  <b>打印 / 导出 PDF：</b>按 <code>⌘P</code>（Windows 用 <code>Ctrl+P</code>），
+  目标选「另存为 PDF」，纸张 A4，**务必勾选「背景图形」**（否则彩色提示框会变成白底）。
+  建议开启「页眉和页脚」以显示页码。
+</div>
+
+<!-- ============================== 封面 ============================== -->
+<section class="cover">
+  <div class="kicker">Beginner's Guide</div>
+  <h1>Linux ARM64<br>字符设备驱动开发</h1>
+  <p class="sub">
+    从一个 I2C 温湿度传感器出发，<br>
+    把「字符设备 → 设备树 → 环形缓冲 / 零拷贝 → sysfs / debugfs → IIO → Runtime PM」<br>
+    这条链路完整走一遍，并学会用<strong>负控实验</strong>证明自己的测试真的有效。
+  </p>
+  <div class="rule"></div>
+  <div class="meta">
+    <b>项目</b>　linux-char-driver（个人项目 · 独立开发）<br>
+    <b>平台</b>　macOS Apple Silicon → Lima VM → QEMU（ARM64 / cortex-a72 / TCG）<br>
+    <b>内核</b>　Linux 6.6.156 · gcc-13 · 4 个内核模块 · 7 套自动化测试 197 项断言<br>
+    <b>源码</b>　github.com/lucien-lab/linux-char-driver
+  </div>
+</section>
+
+<!-- ============================== 目录 ============================== -->
+<section class="toc">
+  <h2>目录</h2>
+  <p class="lead">建议按顺序阅读。若只想快速上手，可跳读第 1、3、5 章。</p>
+  <ol>
+    <li><a href="#c0">第 0 章　写在前面：这个项目在教什么</a>
+      <ol>
+        <li><a href="#c0-1">0.1　一句话概括</a></li>
+        <li><a href="#c0-2">0.2　适合谁读 / 不适合谁读</a></li>
+        <li><a href="#c0-3">0.3　三种读法</a></li>
+        <li><a href="#c0-4">0.4　读完你能得到什么</a></li>
+      </ol>
+    </li>
+    <li><a href="#c1">第 1 章　全局地图：三层环境为什么必须这样搭</a>
+      <ol>
+        <li><a href="#c1-1">1.1　三层架构</a></li>
+        <li><a href="#c1-2">1.2　三条硬约束</a></li>
+        <li><a href="#c1-3">1.3　数据流全景</a></li>
+      </ol>
+    </li>
+    <li><a href="#c2">第 2 章　预备知识（最小必要集）</a>
+      <ol>
+        <li><a href="#c2-1">2.1　字符设备与 file_operations</a></li>
+        <li><a href="#c2-2">2.2　设备树三要素</a></li>
+        <li><a href="#c2-3">2.3　I2C 总线模型</a></li>
+        <li><a href="#c2-4">2.4　中断的上半部与下半部</a></li>
+        <li><a href="#c2-5">2.5　内核编程的三条铁律</a></li>
+      </ol>
+    </li>
+    <li><a href="#c3">第 3 章　环境搭建与第一次运行</a>
+      <ol>
+        <li><a href="#c3-1">3.1　三条命令跑通全流程</a></li>
+        <li><a href="#c3-2">3.2　每步到底在做什么</a></li>
+        <li><a href="#c3-3">3.3　开发循环：改一行代码要多久</a></li>
+        <li><a href="#c3-4">3.4　搭建阶段的六个坑</a></li>
+      </ol>
+    </li>
+    <li><a href="#c4">第 4 章　读懂代码：从架构总览开始</a>
+      <ol>
+        <li><a href="#c4-1">4.1　四个模块的分工</a></li>
+        <li><a href="#c4-2">4.2　文件地图</a></li>
+        <li><a href="#c4-3">4.3　一个字符设备驱动的骨架</a></li>
+      </ol>
+    </li>
+    <li><a href="#c5">第 5 章　六个阶段逐个突破</a>
+      <ol>
+        <li><a href="#c5-1">5.1　阶段 01　四种 IO 模型</a></li>
+        <li><a href="#c5-2">5.2　阶段 02　设备树 + i2c_driver + regmap</a></li>
+        <li><a href="#c5-3">5.3　阶段 03　kfifo 环形缓冲 + mmap 零拷贝</a></li>
+        <li><a href="#c5-4">5.4　阶段 04　sysfs 与 debugfs</a></li>
+        <li><a href="#c5-5">5.5　阶段 05　IIO 子系统驱动</a></li>
+        <li><a href="#c5-6">5.6　阶段 06　Runtime PM 与 KUnit</a></li>
+      </ol>
+    </li>
+    <li><a href="#c6">第 6 章　测试方法论：本书最值钱的一章</a>
+      <ol>
+        <li><a href="#c6-1">6.1　检查项要能当结论读</a></li>
+        <li><a href="#c6-2">6.2　什么叫「假绿」</a></li>
+        <li><a href="#c6-3">6.3　负控实验：证明你的测试会失败</a></li>
+        <li><a href="#c6-4">6.4　三条可复用的原则</a></li>
+        <li><a href="#c6-5">6.5　完整案例：漏写一行 poll_wait 如何被抓</a></li>
+      </ol>
+    </li>
+    <li><a href="#c7">第 7 章　调试手册</a>
+      <ol>
+        <li><a href="#c7-1">7.1　三条调试路径</a></li>
+        <li><a href="#c7-2">7.2　dmesg：最便宜的信息源</a></li>
+        <li><a href="#c7-3">7.3　ftrace：看内核在做什么</a></li>
+        <li><a href="#c7-4">7.4　GDB：单步调试内核</a></li>
+      </ol>
+    </li>
+    <li><a href="#c8">第 8 章　常见坑速查表</a></li>
+    <li><a href="#c9">第 9 章　从实验到真机，以及面试怎么讲</a>
+      <ol>
+        <li><a href="#c9-1">9.1　移植到真机只需改三处</a></li>
+        <li><a href="#c9-2">9.2　面试怎么讲这个项目</a></li>
+        <li><a href="#c9-3">9.3　继续深入的学习路线</a></li>
+      </ol>
+    </li>
+    <li><a href="#ca-1">附录</a>
+      <ol>
+        <li><a href="#ca-1">A　命令速查</a></li>
+        <li><a href="#ca-2">B　术语表</a></li>
+      </ol>
+    </li>
+  </ol>
+</section>
+
+<!-- ============================== 第 0 章 ============================== -->
+<h1 id="c0">第 0 章　写在前面：这个项目在教什么</h1>
+
+<h2 id="c0-1">0.1　一句话概括</h2>
+
+<p class="lead-in">
+  这个项目在 <strong>QEMU 里跑一个自己编译的 ARM64 Linux 内核</strong>，
+  然后写驱动去读一颗「虚拟的 I2C 温湿度传感器」。
+  它教你两件事：<em>怎么写内核驱动</em>，以及<em>怎么证明自己写对了</em>。
+</p>
+
+<p>关键在于它<strong>不依赖任何真实硬件</strong>。传感器芯片是用软件模拟的（<code>virt_i2c.ko</code> 在寄存器层面模拟了一颗 I2C 芯片），
+所以整条链路可以在任何一台 macOS / Linux 电脑上完整复现 —— 从编译内核、启动 QEMU、加载模块，
+到跑完 197 项断言。</p>
+
+<div class="box tip">
+  <span class="t">为什么这是一个好教学项目</span>
+  <p>驱动开发的难点从来不是「调不通 API」，而是<strong>看不见的状态</strong>：中断在什么时候来、锁有没有拿对、
+  用户态和内核态的边界在哪。真实硬件会把这些不确定性藏起来，而这里所有东西都是你控制的、
+  可以随时打断点、可以注入故障 —— <strong>这是唯一能让你把机制看清楚的环境</strong>。</p>
+</div>
+
+<h2 id="c0-2">0.2　适合谁读 / 不适合谁读</h2>
+
+<table>
+  <thead><tr><th style="width:130px">读者</th><th>说明</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><strong>适合</strong></td>
+      <td>会 <code>C</code> 和基本 Linux 命令行；了解指针、结构体、函数指针；
+          知道什么叫「系统调用」；<strong>没写过内核代码也没关系</strong>。</td>
+    </tr>
+    <tr>
+      <td><strong>不适合</strong></td>
+      <td>完全没写过 C 的人（建议先补 C 语言与操作系统基础）；
+          只想「跑一遍看效果」而不打算理解机制的人（本教程有大量篇幅在讲<em>为什么</em>）。</td>
+    </tr>
+  </tbody>
+</table>
+
+<h2 id="c0-3">0.3　三种读法</h2>
+
+<table>
+  <thead><tr><th style="width:120px">读法</th><th>路径</th><th>耗时</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><strong>速览</strong></td>
+      <td>第 1 章 → 第 3 章 → 第 5 章各阶段开头的「要解决什么问题」</td>
+      <td>约 40 分钟</td>
+    </tr>
+    <tr>
+      <td><strong>跟做</strong>（推荐）</td>
+      <td>第 1、2、3 章通读 → 按第 5 章逐阶段动手，每阶段跑通测试再往下</td>
+      <td>2 ~ 3 天</td>
+    </tr>
+    <tr>
+      <td><strong>精读</strong></td>
+      <td>全部 + 对照仓库里的 <code>docs/kb/*-知识点.md</code>（每份 50~100 KB，面向「被追问」）</td>
+      <td>1 ~ 2 周</td>
+    </tr>
+  </tbody>
+</table>
+
+<h2 id="c0-4">0.4　读完你能得到什么</h2>
+
+<table>
+  <thead><tr><th style="width:60px">#</th><th>能力</th><th>对应阶段</th></tr></thead>
+  <tbody>
+    <tr><td>1</td><td>写一个能被 <code>cat</code>、<code>epoll</code>、<code>SIGIO</code> 正常使用的字符设备</td><td>01</td></tr>
+    <tr><td>2</td><td>把硬件参数从代码里「赶出去」，交给设备树；用 <code>regmap</code> 抽象寄存器访问</td><td>02</td></tr>
+    <tr><td>3</td><td>用环形缓冲 + <code>mmap</code> 零拷贝搭建一条不丢数据的数据通路，并处理多进程并发</td><td>03</td></tr>
+    <tr><td>4</td><td>用 <code>sysfs</code> 暴露参数、用 <code>debugfs</code> 暴露运行统计（生产驱动的标配）</td><td>04</td></tr>
+    <tr><td>5</td><td>接入 <code>IIO</code> 子系统，让标准用户态工具能直接读传感器</td><td>05</td></tr>
+    <tr><td>6</td><td>用 <code>Runtime PM</code> 省电，用 <code>KUnit</code> 写内核单元测试</td><td>06</td></tr>
+    <tr><td>7</td><td><strong>用负控实验证明自己的测试会失败</strong> —— 这是最稀缺的能力</td><td>全书</td></tr>
+  </tbody>
+</table>
+
+<div class="box warn">
+  <span class="t">关于代码规模的一个提醒</span>
+  <p>这个项目的<strong>驱动产品代码</strong>（不含 KUnit 测试模块）只有 <strong>2649 行</strong>，
+  其中有效代码约 1310 行，其余 40% 是设计注释；把 KUnit 与头文件都算上，<code>driver/</code> 目录共 2769 行。
+  初看会觉得「太少了」，但这恰恰是内核领域的常态 —— 用本地内核源码里的真实驱动做对照，
+  IIO / hwmon 类驱动的<strong>中位数是 342 行</strong>。内核代码的价值不在行数，
+  而在于<strong>密度</strong>（同样 1000 行里塞了多少个必须理解才敢写的机制）和<strong>写错的后果</strong>
+  （用户态写错是一个 bug，内核写错是系统崩溃或数据损坏）。</p>
+</div>
+
+<!-- ============================== 第 1 章 ============================== -->
+<h1 id="c1">第 1 章　全局地图：三层环境为什么必须这样搭</h1>
+
+<h2 id="c1-1">1.1　三层架构</h2>
+
+<p>这个项目的运行环境不是「一台机器」，而是<strong>三层各司其职</strong>的协作：</p>
+
+<pre class="tree"><code>┌───────────────────────────────────────────────────────────────────────┐
+│ ①  macOS 宿主（Apple Silicon）                                        │
+│                                                                       │
+│     · 项目源码（可写）                                                 │
+│     · qemu-system-aarch64   ← 真正「跑内核」的地方（TCG + cortex-a72）  │
+│     · dtc（设备树编译器）/ python3                                     │
+│     · 测试结果解析（scripts/22-macos-run-test.sh）                     │
+│     · aarch64-linux-musl-gcc ← 编用户态测试程序                        │
+└───────────────▲───────────────────────────────┬───────────────────────┘
+                │ limactl copy（产物拷出）       │ limactl shell（进 VM 执行命令）
+┌───────────────┴───────────────────────────────▼───────────────────────┐
+│ ②  Lima 虚拟机 "dev"（Ubuntu LTS / aarch64 / 4 vCPU）                  │
+│                                                                       │
+│     · ~/kernel-build/linux-6.6.156   ← 已编译好的内核树（gcc-13）      │
+│     · ~/lab/{driver,user,tests}      ← 从宿主拷进来的源码副本          │
+│     · ~/lab/out/                     ← 构建产物（initramfs / .ko）     │
+└───────────────────────────────────────────────────────────────────────┘
+                │ 产物（Image + initramfs.cpio.gz + virt-sensor.dtb）
+┌───────────────▼───────────────────────────────────────────────────────┐
+│ ③  QEMU 里的 ARM64 Linux（约 10 秒启动一次）                           │
+│                                                                       │
+│     · 加载 virt_i2c.ko → sensor_char.ko（按 /etc/modules.load 顺序）    │
+│     · 跑 /tests/phases/&lt;阶段&gt;.sh，输出 [CHECK:PASS]/[CHECK:FAIL]       │
+│     · 串口日志 → 宿主 logs/ → 由 22 脚本解析成结论                     │
+└───────────────────────────────────────────────────────────────────────┘</code></pre>
+
+<div class="box tip">
+  <span class="t">记住这个划分的一句话版本</span>
+  <p><strong>macOS 负责「跑」和「判」，Lima 负责「编」，QEMU 负责「load 和验」。</strong>
+  三者之间只通过两个动作连接：<code>limactl shell</code>（执行命令）和 <code>limactl copy</code>（搬产物）。</p>
+</div>
+
+<h2 id="c1-2">1.2　三条硬约束（决定了架构为什么长这样）</h2>
+
+<table>
+  <thead><tr><th style="width:55px">#</th><th style="width:230px">约束</th><th>后果与应对</th></tr></thead>
+  <tbody>
+    <tr>
+      <td>1</td>
+      <td>macOS 的 XNU 内核<strong>不是</strong> Linux，不能 <code>insmod</code></td>
+      <td>驱动必须加载进 Linux 内核 → 必须有一个 Linux 运行环境 → 那是 QEMU</td>
+    </tr>
+    <tr>
+      <td>2</td>
+      <td>macOS 上没有可用的 aarch64 内核编译链，且<strong>宿主 <code>$HOME</code> 以只读方式挂进虚拟机</strong></td>
+      <td>内核与模块只能在 VM 里编；源码要「拷一份」到 VM 的可写目录（<code>~/lab/</code>），
+          产物要 <code>limactl copy</code> 搬回宿主</td>
+    </tr>
+    <tr>
+      <td>3</td>
+      <td>QEMU 用 <code>-accel hvf -cpu host</code> 时 <strong>ftrace 会挂死</strong>（已实测）</td>
+      <td>固定使用 <code>-accel tcg -cpu cortex-a72</code> —— 纯软件模拟，慢但稳定，
+          而且不受宿主 CPU 影响，结果可复现</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="box warn">
+  <span class="t">第 2 条是初学者最容易卡住的地方</span>
+  <p>你会在 VM 里发现「怎么都写不进文件」。原因是 Lima 把宿主 <code>$HOME</code> 以 <strong>只读</strong>挂载进 VM，
+  保护你的宿主文件不被误改。所以所有构建都在 VM 自己的 <code>~/</code>（即 <code>/home/&lt;user&gt;.guest</code>）里做。</p>
+</div>
+
+<h2 id="c1-3">1.3　数据流全景</h2>
+
+<p>驱动装好之后，一个样本从「传感器」走到「用户态」的完整路径：</p>
+
+<pre><code>  ① 触发源
+     实验环境：hrtimer 每 interval_ms 到期 → generic_handle_domain_irq() 触发虚拟中断
+     真机    ：传感器 ALERT/DRDY 引脚接到 GIC 的硬件中断线
+                        │
+                        ▼
+  ② 上半部（hard IRQ）  sensor_irq_hard()
+     只做最少的事：记录时间戳、返回 IRQ_WAKE_THREAD 唤醒内核线程
+     —— 为什么不能多做：硬中断上下文不能睡眠，也不该占用 CPU
+
+                        │
+                        ▼
+  ③ 下半部（线程化中断）sensor_irq_thread()   ← 唯一的生产者
+     · 允许睡眠 → 可以走 I2C 总线读寄存器（regmap_read）
+     · 写入最新的样本（latest）
+     · 写入 kfifo 环形缓冲（队列满则丢新并累加 kfifo_dropped）
+     · wake_up_interruptible(&amp;sd-&gt;wq)   ← 唤醒阻塞的读者
+     · kill_fasync(&amp;sd-&gt;fasync, SIGIO, POLL_IN)  ← 通知异步读者
+
+                        │
+        ┌───────────────┼────────────────┬──────────────────┐
+        ▼               ▼                ▼                  ▼
+  ④  kfifo 环形缓冲   mmap 共享页      latest           debugfs 统计
+     read()/poll()    用户态直接读      供 ioctl 立即取   供人观察
+     epoll/SIGIO      零拷贝           GET_SAMPLE        stats/ring/regs
+                      （seqlock 保护）</code></pre>
+
+<p>这里已经埋了整本书最重要的一条设计原则：</p>
+
+<pre><code>传感器寄存器 --I2C--&gt; 线程化中断处理（<span class="hl">唯一生产者</span>）
+                          ├── kfifo 环形缓冲 --waitqueue--&gt; read/poll/epoll/SIGIO
+                          └── mmap 共享页（seqlock）-----&gt; 用户态零拷贝读</code></pre>
+
+<div class="box tip">
+  <span class="t">「唯一生产者、两个出口」</span>
+  <p>只有线程化中断处理这一个地方在生产数据，所以<strong>不需要复杂的锁</strong>：
+  生产者侧只需要和「多个读者」协调，而读者之间用 <code>kfifo</code> 的索引语义 + 一把 <code>spinlock</code> 就够了。
+  这是设计驱动时的通用技巧：<em>先把生产者收敛成一个，复杂度立刻降一档</em>。</p>
+</div>
+
+<!-- ============================== 第 2 章 ============================== -->
+<h1 id="c2">第 2 章　预备知识（最小必要集）</h1>
+
+<p class="lead-in">这五个概念是读这个项目代码的入场券。每节都不长，但请认真读完 —— 后面所有代码都建立在这上面。</p>
+
+<h2 id="c2-1">2.1　字符设备与 file_operations</h2>
+
+<p>Linux 把设备分三类：<strong>字符设备</strong>（按字节流读写，如串口、传感器）、
+<strong>块设备</strong>（按块读写，带缓冲，如硬盘）、<strong>网络设备</strong>（走 socket）。
+传感器属于字符设备。</p>
+
+<p>一个字符设备的本质就是<strong>把一堆函数指针交给内核</strong>：</p>
+
+<pre><code><span class="kw">static const struct</span> file_operations sensor_fops = {
+    .owner          = THIS_MODULE,
+    .open           = sensor_open,      <span class="cm">/* open("/dev/sensor0", ...) */</span>
+    .release        = sensor_release,   <span class="cm">/* close() */</span>
+    .read           = sensor_read,      <span class="cm">/* read() */</span>
+    .write          = sensor_write,     <span class="cm">/* write() */</span>
+    .poll           = sensor_poll,      <span class="cm">/* select()/poll()/epoll_wait() */</span>
+    .fasync         = sensor_fasync,    <span class="cm">/* fcntl(F_SETFL, O_ASYNC) → SIGIO */</span>
+    .unlocked_ioctl = sensor_ioctl,     <span class="cm">/* ioctl() —— 不走大内核锁 */</span>
+    .mmap           = sensor_mmap,      <span class="cm">/* mmap() */</span>
+};</code></pre>
+
+<p>用户在 <code>/dev/sensor0</code> 上调用 <code>read()</code>，VFS 查 fd → 找到 cdev → 找到这个结构体 → 调 <code>sensor_read</code>。
+<strong>理解「VFS 是分发器、驱动是回调」这个模型，就理解了一半。</strong></p>
+
+<table>
+  <thead><tr><th style="width:110px">注册步骤</th><th>API</th><th>作用</th></tr></thead>
+  <tbody>
+    <tr><td>① 拿设备号</td><td><code>alloc_chrdev_region()</code></td><td>让内核动态分一个主设备号</td></tr>
+    <tr><td>② 关联 fops</td><td><code>cdev_init()</code> + <code>cdev_add()</code></td><td>把设备号与 <code>file_operations</code> 绑起来</td></tr>
+    <tr><td>③ 建类与节点</td><td><code>class_create()</code> + <code>device_create()</code></td><td>触发 udev 自动创建 <code>/dev/sensor0</code>，不需要手写 <code>mknod</code></td></tr>
+  </tbody>
+</table>
+
+<h2 id="c2-2">2.2　设备树三要素</h2>
+
+<p>设备树（Device Tree, DT）的作用是<strong>把「硬件是什么样」和「驱动怎么工作」分开</strong>。
+同一份驱动代码，换一块板子只改设备树，不用重编译。</p>
+
+<pre><code><span class="cm">/* dts/sensor-node.dts.inc —— 本项目的设备树片段 */</span>
+virt_i2c: virt-i2c {
+    compatible = <span class="st">"lucien,virt-i2c"</span>;     <span class="cm">// ← 匹配 virt_i2c 驱动的 of_match_table</span>
+    #address-cells = &lt;0x01&gt;;
+    #size-cells    = &lt;0x00&gt;;
+    status = <span class="st">"okay"</span>;
+
+    sensor0: sensor@48 {
+        compatible = <span class="st">"lucien,sensor-char"</span>;   <span class="cm">// ← 匹配 sensor_char 驱动</span>
+        reg = &lt;0x48&gt;;                      <span class="cm">// ← I2C 从机地址（7 位）</span>
+        poll-interval-ms = &lt;0x1f4&gt;;        <span class="cm">// ← 500ms，自定义属性</span>
+    };
+};</code></pre>
+
+<table>
+  <thead><tr><th style="width:150px">要素</th><th>含义</th><th>驱动侧怎么用</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><code>compatible</code></td>
+      <td>「我是什么」，格式 <code>厂商,型号</code></td>
+      <td><code>of_match_table</code> 里列出 → 匹配上就调用驱动的 <code>probe()</code></td>
+    </tr>
+    <tr>
+      <td><code>reg</code></td>
+      <td>「我在哪」（地址 / 寄存器范围）</td>
+      <td>I2C 子节点的 <code>reg</code> 就是从机地址，<strong>i2c 核心自动解析后填进 <code>client-&gt;addr</code></strong></td>
+    </tr>
+    <tr>
+      <td>自定义属性</td>
+      <td>如 <code>poll-interval-ms</code></td>
+      <td><code>of_property_read_u32(np, "poll-interval-ms", &amp;v)</code> 读取</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="box good">
+  <span class="t">本项目的「设备树解耦」检验标准</span>
+  <p>打开 <code>driver/sensor_char.c</code>，<strong>搜不到任何硬件地址字面量</strong>（没有 <code>0x48</code>、没有总线号）。
+  所有硬件参数都从设备树来。这是判断一个驱动「是否可移植」的最快方法。</p>
+</div>
+
+<h2 id="c2-3">2.3　I2C 总线模型</h2>
+
+<p>I2C 是两根线的总线（SCL 时钟 + SDA 数据），一个<strong>控制器（master / adapter）</strong>下面挂多个<strong>从设备（slave / client）</strong>，
+每个从设备有一个 7 位地址（本项目是 <code>0x48</code>）。</p>
+
+<pre><code>   一颗 I2C 控制器（adapter）
+      ├── 从设备 0x48  ← sensor_char.ko 绑定（字符设备接口）
+      ├── 从设备 0x49  ← sensor_iio.ko  绑定（IIO 接口）
+      └── ...（本项目的 virt_i2c 为 0x48~0x4b 各维护一份独立的寄存器 bank）</code></pre>
+
+<table>
+  <thead><tr><th style="width:170px">内核对象</th><th>代表什么</th><th>本项目中</th></tr></thead>
+  <tbody>
+    <tr><td><code>i2c_adapter</code></td><td>一颗 I2C 控制器</td><td><code>virt_i2c.ko</code> 注册（带 <code>of_node</code>）</td></tr>
+    <tr><td><code>i2c_client</code></td><td>总线上的一个从设备</td><td>i2c 核心从设备树子节点自动枚举创建</td></tr>
+    <tr><td><code>i2c_driver</code></td><td>「我能驱动哪些从设备」</td><td><code>sensor_char.ko</code> 注册后与 client 匹配 → <code>probe(client)</code></td></tr>
+    <tr><td><code>regmap</code></td><td>寄存器访问的抽象层</td><td><code>devm_regmap_init_i2c()</code>，之后用 <code>regmap_read/write</code>，不用直接碰 I2C API</td></tr>
+  </tbody>
+</table>
+
+<div class="box tip">
+  <span class="t">为什么用 regmap 而不是直接调 i2c_transfer？</span>
+  <p>因为 <code>regmap</code> 把「寄存器宽度、字节序、是否需要读-改-写、要不要加锁」这些琐事统一收口，
+  而且同一份代码既能用在 I2C 上，也能用在 SPI／MMIO 上。<strong>真实项目里几乎没有人直接裸调 I2C API。</strong></p>
+</div>
+
+<h2 id="c2-4">2.4　中断的上半部与下半部</h2>
+
+<p>中断处理程序（ISR）运行在<strong>硬中断上下文</strong>，这个上下文有两条铁律：</p>
+
+<ol>
+  <li><strong>不能睡眠</strong>（不能调用任何可能阻塞的函数，包括大部分 I2C 传输）；</li>
+  <li><strong>越快越好</strong>（它运行期间当前 CPU 不能做别的事）。</li>
+</ol>
+
+<p>所以要读 I2C 传感器（会睡眠）就必须「分两半」：</p>
+
+<table>
+  <thead><tr><th style="width:130px">部分</th><th>上下文</th><th>能做什么</th><th>本项目</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><strong>上半部</strong><br>（hard IRQ）</td>
+      <td>硬中断，不能睡眠</td>
+      <td>读硬件状态、记录时间戳、清中断标志</td>
+      <td><code>sensor_irq_hard()</code>：只记录，返回 <code>IRQ_WAKE_THREAD</code></td>
+    </tr>
+    <tr>
+      <td><strong>下半部</strong><br>（threaded IRQ）</td>
+      <td>内核线程，<strong>可以睡眠</strong></td>
+      <td>走 I2C 读数据、写缓冲、唤醒读者</td>
+      <td><code>sensor_irq_thread()</code>：唯一的生产者</td>
+    </tr>
+  </tbody>
+</table>
+
+<pre><code><span class="cm">/* 上半部：能少做就少做 */</span>
+<span class="kw">static</span> irqreturn_t sensor_irq_hard(<span class="kw">int</span> irq, <span class="kw">void</span> *data)
+{
+    <span class="kw">struct</span> sensor_dev *sd = data;
+    sd-&gt;irq_ts = ktime_get();          <span class="cm">/* 只记时间戳 */</span>
+    <span class="kw">return</span> IRQ_WAKE_THREAD;            <span class="cm">/* ← 关键：请内核唤醒下半部线程 */</span>
+}
+
+<span class="cm">/* 下半部：可以睡眠，所以能走 I2C */</span>
+<span class="kw">static</span> irqreturn_t sensor_irq_thread(<span class="kw">int</span> irq, <span class="kw">void</span> *data)
+{
+    <span class="cm">/* regmap_read() 会睡眠 —— 这里安全 */</span>
+    regmap_read(sd-&gt;regmap, REG_TEMP, &amp;raw);
+    <span class="cm">/* ... 换算、写 kfifo、wake_up、kill_fasync ... */</span>
+    <span class="kw">return</span> IRQ_HANDLED;
+}
+
+<span class="cm">/* 注册时同时给上下半部 */</span>
+request_threaded_irq(client-&gt;irq, sensor_irq_hard, sensor_irq_thread,
+                     IRQF_ONESHOT, <span class="st">"sensor"</span>, sd);</code></pre>
+
+<h2 id="c2-5">2.5　内核编程的三条铁律</h2>
+
+<div class="box danger">
+  <span class="t">铁律一：先问「我能睡吗」</span>
+  <p>硬中断、软中断、自旋锁临界区、原子上下文 —— <strong>都不能睡眠</strong>。
+  睡眠 = 调用 <code>mutex_lock</code>、<code>kmalloc(GFP_KERNEL)</code>、I2C/SPI 传输、<code>copy_to_user</code> 等。
+  项目里 <code>sd-&gt;lock</code> 是 <code>mutex</code>，所以中断上下文一律不许碰它。</p>
+</div>
+
+<div class="box danger">
+  <span class="t">铁律二：用户态内存不能直接解引用</span>
+  <p><code>ubuf</code> 来自用户态，可能是个非法地址、也可能在访问时被换出。
+  必须通过 <code>copy_to_user()</code> / <code>copy_from_user()</code>，并且<strong>检查返回值</strong>。
+  本项目在 <code>copy_to_user</code> 失败时会把样本放回队列，而不是默默丢掉 —— 因为
+  <code>ring_count + kfifo_dropped == irq_count</code> 这个守恒式会立刻暴露「样本蒸发」。</p>
+</div>
+
+<div class="box danger">
+  <span class="t">铁律三：谁分配谁释放，顺序不能错</span>
+  <p>本项目 <code>release()</code> 里必须<strong>先</strong>摘除异步通知，<strong>再</strong>清私有数据：</p>
+  <pre style="margin:0"><code>sensor_fasync(-1, file, 0);   <span class="cm">/* 必须在下一行之前 */</span>
+file-&gt;private_data = NULL;</code></pre>
+  <p>因为 <code>sensor_fasync()</code> 内部要读 <code>file-&gt;private_data</code> 拿 <code>sd</code>。
+  顺序反了就是 use-after-free。</p>
+</div>
+
+<!-- ============================== 第 3 章 ============================== -->
+<h1 id="c3">第 3 章　环境搭建与第一次运行</h1>
+
+<h2 id="c3-1">3.1　三条命令跑通全流程</h2>
+
+<p>先决条件：macOS（Apple Silicon）、已装 Homebrew、磁盘留 30 GB 以上。</p>
+
+<pre><code><span class="cm"># ① 开发机准备：装 QEMU / Lima / 新版 GNU Make / 交叉工具链</span>
+bash scripts/01-setup-macos.sh &amp;&amp; bash scripts/02-setup-vm.sh
+
+<span class="cm"># ② 进虚拟机，一键构建（编内核约 15~30 分钟，只需要做一次）</span>
+limactl shell dev
+bash <span class="st">"$PWD/scripts/03-build-all-vm.sh"</span>
+
+<span class="cm"># ③ 回到宿主，运行 + 观察</span>
+bash <span class="st">"$PWD/scripts/04-run-qemu-vm.sh"</span>
+
+<span class="cm"># 推荐：交互模式（自己进去敲命令，而不是跑完自动关机）</span>
+INTERACTIVE=1 bash <span class="st">"$PWD/scripts/04-run-qemu-vm.sh"</span></code></pre>
+
+<div class="box tip">
+  <span class="t">第一次跑请用 INTERACTIVE=1</span>
+  <p>非交互模式跑完测试就关机，你看不到中间过程。
+  交互模式会给你一个 QEMU 串口控制台，可以自己 <code>insmod</code>、<code>cat /dev/sensor0</code>、<code>dmesg</code>，
+  <strong>对理解驱动的价值远大于看测试结果</strong>。</p>
+</div>
+
+<h2 id="c3-2">3.2　每步到底在做什么</h2>
+
+<table>
+  <thead><tr><th style="width:150px">脚本</th><th>在哪跑</th><th>做什么</th></tr></thead>
+  <tbody>
+    <tr><td><code>01-setup-macos.sh</code></td><td>macOS</td><td><code>brew install qemu lima</code>；装 <code>dtc</code>、<code>aarch64-linux-musl-gcc</code></td></tr>
+    <tr><td><code>02-setup-vm.sh</code></td><td>macOS</td><td>创建 Lima VM <code>dev</code>，装 gcc / make / flex / bison / bc / libssl-dev / libelf-dev / gdb-multiarch 等</td></tr>
+    <tr><td><code>11-vm-prepare-pristine.sh</code></td><td>VM</td><td>从官方 tarball 解出<strong>干净的</strong>内核树（这一步是为了避开「源码树被污染」的坑，见 3.4）</td></tr>
+    <tr><td><code>10-vm-build-kernel.sh</code></td><td>VM</td><td>用 <code>gcc-13</code> 编 ARM64 内核 → <code>Image</code></td></tr>
+    <tr><td><code>12-vm-build-image.sh</code></td><td>VM</td><td>做一个最小 rootfs（busybox）+ initramfs</td></tr>
+    <tr><td><code>13-vm-fast-cycle.sh</code></td><td>VM</td><td><strong>日常开发循环的主角</strong>：编 <code>.ko</code> + 用户态程序 + 打包 initramfs（约 10 秒）</td></tr>
+    <tr><td><code>20-macos-gen-dtb.sh</code></td><td>macOS</td><td>让 QEMU 导出自带的 virt 设备树 → 反编译 → 插入 sensor 节点 → 重新编译成 dtb</td></tr>
+    <tr><td><code>21-macos-sync-artifacts.sh</code></td><td>macOS</td><td><code>limactl copy</code> 把 VM 里的产物搬到 <code>artifacts/</code></td></tr>
+    <tr><td><code>22-macos-run-test.sh</code></td><td>macOS</td><td>启动 QEMU，解析串口日志里的 <code>[CHECK:PASS]</code> 标记，给出结论</td></tr>
+    <tr><td><code>23-check-worktree-clean.sh</code></td><td>macOS</td><td><strong>交付门禁</strong>：扫描代码里是否残留实验标记 / 被注释掉的关键语句</td></tr>
+  </tbody>
+</table>
+
+<h2 id="c3-3">3.3　开发循环：改一行代码要多久</h2>
+
+<p>这是你之后会重复几十次的动作。整个循环约 <strong>20 ~ 40 秒</strong>：</p>
+
+<pre><code>cd &lt;项目目录&gt;
+
+<span class="cm"># ① 在 VM 里编模块 + 用户态程序 + 打包 initramfs（约 10 秒）</span>
+limactl shell dev bash -c <span class="st">'TEST=&lt;阶段名&gt; bash /path/to/scripts/13-vm-fast-cycle.sh'</span>
+
+<span class="cm"># ② 把产物搬到宿主 artifacts/</span>
+bash scripts/21-macos-sync-artifacts.sh
+
+<span class="cm"># ③ 启动 QEMU 跑该阶段测试，自动出 PASS/FAIL（约 10~30 秒）</span>
+bash scripts/22-macos-run-test.sh &lt;阶段名&gt; 180
+
+<span class="cm"># ④ 回归：确认没把已有功能改坏</span>
+bash scripts/22-macos-run-test.sh smoke 180</code></pre>
+
+<div class="box tip">
+  <span class="t">① 只在「源码有改动」后才需要跑</span>
+  <p>initramfs 里打包了<strong>全部</strong>阶段测试脚本，运行时通过内核命令行参数
+  <code>test=&lt;阶段名&gt;</code> 选择跑哪一个（由 <code>22</code> 脚本自动传入）。
+  所以一份产物可以依次跑多个阶段，不必为每个阶段重建。</p>
+  <p>你会看到一行 <code>Unknown kernel command line parameters "test=xxx"</code> ——
+  这是内核对自己不认识的启动参数的常规提示，<strong>不是错误</strong>。</p>
+</div>
+
+<h2 id="c3-4">3.4　搭建阶段的六个坑（都已踩过）</h2>
+
+<table>
+  <thead><tr><th style="width:250px">现象</th><th>根因</th><th>处理</th></tr></thead>
+  <tbody>
+    <tr>
+      <td>内核编译报 <code>Syntax error: word unexpected</code></td>
+      <td>宿主源码树里混进了 macOS 的 Mach-O 产物（如 <code>scripts/kconfig/conf</code>）</td>
+      <td>从官方 tarball 重新解出（<code>scripts/11</code>）</td>
+    </tr>
+    <tr>
+      <td><code>unknown type name 'uuid_t'</code></td>
+      <td>树里 <code>scripts/mod/file2alias.c</code> 被人改成了 <code>k_uuid_t</code></td>
+      <td>同上，用干净 tarball 重建</td>
+    </tr>
+    <tr>
+      <td><code>redefinition of 'struct list_head'</code></td>
+      <td>Ubuntu 的 glibc 拉进了 <code>/usr/include/linux/stat.h</code>，与内核自带的 <code>tools/include/linux/types.h</code> 冲突</td>
+      <td>给两个头文件加同名 include guard（补丁已存档）</td>
+    </tr>
+    <tr>
+      <td>编宿主工具时报结构体成员错误</td>
+      <td>VM 默认 gcc 太新（内核 6.6 官方只支持到 gcc 13）</td>
+      <td>显式指定 <code>CC=gcc-13 HOSTCC=gcc-13</code></td>
+    </tr>
+    <tr>
+      <td>写 ftrace 后 QEMU 卡死</td>
+      <td><code>-accel hvf -cpu host</code> 与 ftrace 冲突</td>
+      <td>固定用 <code>-accel tcg -cpu cortex-a72</code></td>
+    </tr>
+    <tr>
+      <td>模块加载失败 <code>invalid module format</code></td>
+      <td>模块与 <code>Image</code> 不是同一棵内核树 / 同一份配置编出来的</td>
+      <td>永远用同一棵树编模块，并刷新 <code>artifacts/Image</code></td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="box warn">
+  <span class="t">「干净的源码树」比你想的重要</span>
+  <p>前两个坑的教训是：<strong>内核源码树一旦被污染，报错会出现在完全无关的地方</strong>，
+  你会花几个小时去查一个根本不存在的语法错误。所以项目里专门有一个
+  <code>11-vm-prepare-pristine.sh</code> 从官方 tarball 重新解压。同样重要的是：
+  <strong>永远不要修改内核源码树</strong>（真需要改就存补丁文件）。</p>
+</div>
+
+<!-- ============================== 第 4 章 ============================== -->
+<h1 id="c4">第 4 章　读懂代码：从架构总览开始</h1>
+
+<h2 id="c4-1">4.1　四个模块的分工</h2>
+
+<table>
+  <thead><tr><th style="width:170px">模块</th><th style="width:80px">行数</th><th>职责</th><th>给你什么</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><code>virt_i2c.ko</code></td>
+      <td>421</td>
+      <td>虚拟 I2C 控制器（<code>platform_driver</code> + <code>compatible="lucien,virt-i2c"</code>）<br>
+          在寄存器层面模拟一颗温湿度芯片，为 0x48~0x4b 各维护独立 bank</td>
+      <td>让你<strong>不需要真实硬件</strong>就能练 I2C 驱动</td>
+    </tr>
+    <tr>
+      <td><code>sensor_char.ko</code><br><span class="tag p1">核心</span></td>
+      <td>1676</td>
+      <td>字符设备驱动：四种 IO 模型、kfifo 环形缓冲、mmap 零拷贝、sysfs/debugfs、
+          自建 irq_chip+irq_domain、Runtime PM</td>
+      <td><strong>整个项目 80% 的知识点都在这个文件里</strong></td>
+    </tr>
+    <tr>
+      <td><code>sensor_iio.ko</code></td>
+      <td>368</td>
+      <td>同一颗芯片的 IIO 子系统版本（<code>triggered buffer</code> + <code>hrtimer trigger</code>），绑 0x49</td>
+      <td>对比「自己造轮子」vs「接入标准子系统」</td>
+    </tr>
+    <tr>
+      <td><code>sensor_kunit.ko</code></td>
+      <td>120</td>
+      <td>KUnit 单元测试，只测纯逻辑（<code>sensor_calc.h</code> 里的换算函数）</td>
+      <td>内核里的单元测试怎么写</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="box tip">
+  <span class="t">先看哪个文件？</span>
+  <p>顺序建议：<code>sensor_calc.h</code>（99 行，纯逻辑，好懂）→
+  <code>virt_i2c.c</code>（421 行，I2C 是怎么被模拟出来的）→
+  <strong><code>sensor_char.c</code></strong>（1676 行，主战场，但请<em>分阶段读</em>，见第 5 章）→
+  <code>sensor_iio.c</code>。行数看似多，但其中 40% 是设计注释。</p>
+</div>
+
+<h2 id="c4-2">4.2　文件地图</h2>
+
+<pre class="tree"><code>linux-char-driver/
+├── driver/                      <span class="cm"># 内核模块（2769 行 C，含 KUnit 与头文件）</span>
+│   ├── sensor_char.c            <span class="cm"># ★ 核心：字符设备驱动（1676 行）</span>
+│   ├── virt_i2c.c               <span class="cm"># 虚拟 I2C 控制器 + 芯片寄存器模拟</span>
+│   ├── sensor_iio.c             <span class="cm"># IIO 子系统版驱动</span>
+│   ├── sensor_kunit.c           <span class="cm"># KUnit 单元测试</span>
+│   ├── sensor_calc.h            <span class="cm"># 纯逻辑：温湿度换算（可被 KUnit 测）</span>
+│   ├── sensor_ioctl.h           <span class="cm"># ioctl 命令号定义（内核/用户态共享）</span>
+│   ├── Makefile                 <span class="cm"># kbuild 外部模块编译</span>
+│   └── modules.load             <span class="cm"># 模块加载顺序（有依赖，别乱调）</span>
+│
+├── user/                        <span class="cm"># 用户态测试程序（1916 行 C）</span>
+│   ├── io_models_test.c         <span class="cm"># 四种 IO 模型验证</span>
+│   ├── ring_mmap_test.c         <span class="cm"># 环形缓冲 + mmap 验证</span>
+│   ├── concurrency_test.c       <span class="cm"># 多进程并发压力</span>
+│   ├── iio_read_test.c          <span class="cm"># IIO 接口验证</span>
+│   └── sensor_test.c            <span class="cm"># 基础功能（smoke）</span>
+│
+├── tests/                       <span class="cm"># 测试框架（跑在 QEMU 里的 busybox sh）</span>
+│   ├── phases/*.sh              <span class="cm"># 每阶段一个测试脚本（判定逻辑）</span>
+│   ├── runner/init.sh           <span class="cm"># init：按 test= 参数选脚本</span>
+│   └── runner/lib.sh            <span class="cm"># 断言函数库（pass/fail/check_*）</span>
+│
+├── dts/                         <span class="cm"># 设备树节点片段</span>
+│   └── sensor-node.dts.inc      <span class="cm"># ★ 实际被使用的（sensor-char.dtsi 是早期参考件）</span>
+│
+├── scripts/                     <span class="cm"># 构建与验证脚本（编号即使用顺序）</span>
+│   ├── 01~04                    <span class="cm"># 环境搭建 / 一键构建 / 启动 QEMU</span>
+│   ├── 10~13                    <span class="cm"># 内核与 initramfs 构建</span>
+│   ├── 15                       <span class="cm"># 编一个带 KCSAN 的内核（并发检测）</span>
+│   ├── 20~22                    <span class="cm"># 设备树 / 产物同步 / 跑测试</span>
+│   └── 23                       <span class="cm"># 交付门禁：扫描实验残留</span>
+│
+├── docs/                        <span class="cm"># 文档</span>
+│   ├── 01~04, 10, 11            <span class="cm"># 搭建实录 / 设计笔记 / 调试手册 / 守则 / 任务书</span>
+│   ├── impl/                    <span class="cm"># 每阶段实现记录（改了什么、为什么）</span>
+│   ├── kb/                      <span class="cm"># 每阶段知识点（面向被追问，50~100KB）</span>
+│   └── verify/                  <span class="cm"># 每阶段独立验证报告（证据行号）</span>
+│
+├── artifacts/                   <span class="cm"># 构建产物（Image / initramfs / dtb / .ko）</span>
+└── logs/                        <span class="cm"># 每次 QEMU 运行的串口日志（验证证据）</span></code></pre>
+
+<h2 id="c4-3">4.3　一个字符设备驱动的骨架</h2>
+
+<p>把 <code>sensor_char.c</code> 剥到最简，任何字符设备驱动都是这五段。建议你先在脑子里建立这个模板，
+再往里填具体阶段的内容：</p>
+
+<pre><code><span class="cm">/* ① 私有数据结构：一个「设备」的全部状态 */</span>
+<span class="kw">struct</span> sensor_dev {
+    <span class="kw">struct</span> i2c_client   *client;     <span class="cm">/* 我是谁（匹配到的 i2c 从设备） */</span>
+    <span class="kw">struct</span> cdev         cdev;       <span class="cm">/* 注册进内核的字符设备 */</span>
+    <span class="kw">struct</span> device      *dev;        <span class="cm">/* /sys/devices/... 里的设备对象 */</span>
+    <span class="kw">struct</span> regmap      *regmap;     <span class="cm">/* 寄存器访问抽象 */</span>
+    <span class="kw">struct</span> mutex        lock;       <span class="cm">/* 保护下面的状态（进程上下文才可获取） */</span>
+    <span class="kw">struct</span> sensor_sample latest;    <span class="cm">/* 最新样本 */</span>
+    <span class="kw">struct</span> kfifo        ring;       <span class="cm">/* 环形缓冲（阶段 03） */</span>
+    <span class="kw">struct</span> wait_queue_head_t wq;    <span class="cm">/* read/poll 的等待队列 */</span>
+    <span class="kw">struct</span> fasync_struct *fasync;   <span class="cm">/* SIGIO 的订阅者链表 */</span>
+};
+
+<span class="cm">/* ② file_operations：VFS 的回调表（见 2.1） */</span>
+<span class="kw">static const struct</span> file_operations sensor_fops = { ... };
+
+<span class="cm">/* ③ probe()：匹配成功后内核调这里，初始化一切 */</span>
+<span class="kw">static int</span> sensor_probe(<span class="kw">struct</span> i2c_client *client)
+{
+    <span class="kw">struct</span> sensor_dev *sd = devm_kzalloc(&amp;client-&gt;dev, <span class="kw">sizeof</span>(*sd), GFP_KERNEL);
+    dev_set_drvdata(&amp;client-&gt;dev, sd);
+    sd-&gt;client = client;
+    mutex_init(&amp;sd-&gt;lock);
+    init_waitqueue_head(&amp;sd-&gt;wq);
+    sensor_chrdev_register(sd);      <span class="cm">/* 注册字符设备 → /dev/sensor0 */</span>
+    sensor_dbgfs_init(sd);           <span class="cm">/* 建 debugfs */</span>
+    <span class="cm">/* ... 中断、hrtimer、sysfs、Runtime PM ... */</span>
+    <span class="kw">return</span> 0;
+}
+
+<span class="cm">/* ④ remove()：卸载时回收（devm_* 分配的会自动释放） */</span>
+<span class="kw">static void</span> sensor_remove(<span class="kw">struct</span> i2c_client *client) { ... }
+
+<span class="cm">/* ⑤ 匹配表 + 注册宏 */</span>
+<span class="kw">static const struct</span> of_device_id sensor_of_match[] = {
+    { .compatible = <span class="st">"lucien,sensor-char"</span> },
+    { }
+};
+MODULE_DEVICE_TABLE(of, sensor_of_match);
+
+<span class="kw">static struct</span> i2c_driver sensor_driver = {
+    .driver = { .name = <span class="st">"sensor-char"</span>, .of_match_table = sensor_of_match,
+                .pm = &amp;sensor_pm_ops },
+    .probe  = sensor_probe,
+    .remove = sensor_remove,
+};
+module_i2c_driver(sensor_driver);     <span class="cm">/* ← 一行替代 module_init/exit */</span></code></pre>
+
+<div class="box tip">
+  <span class="t">读代码的正确姿势</span>
+  <p>不要从第 1 行读到第 1676 行。改成：<strong>先读 <code>probe()</code></strong>（它告诉你这个设备由哪些部件组成），
+  然后<strong>挑一个 fops 回调</strong>（比如 <code>read</code>）从入口读到出口，
+  遇到不认识的 API 就去查它的「能不能睡眠 / 要不要持锁」。<strong>驱动代码的组织方式就是「按入口分散」，不是「按流程线性」。</strong></p>
+</div>
+
+<!-- ============================== 第 5 章 ============================== -->
+<h1 id="c5">第 5 章　六个阶段逐个突破</h1>
+
+<p class="lead-in">
+  每个阶段都回答四个问题：<strong>要解决什么问题 → 关键 API 是什么 → 代码长什么样 → 怎么验证它真的对了</strong>。
+  建议一次只读一个阶段，读完就动手跑一遍该阶段的测试。
+</p>
+
+<table>
+  <thead><tr><th style="width:70px">阶段</th><th>主题</th><th style="width:90px">检查项</th><th>日志</th></tr></thead>
+  <tbody>
+    <tr><td>01</td><td>四种 IO 模型（阻塞 / 非阻塞 / poll·epoll / fasync·SIGIO）</td><td>16</td><td><code>logs/*-01-io-models.log</code></td></tr>
+    <tr><td>02</td><td>设备树解耦 + <code>i2c_driver</code> + <code>regmap</code></td><td>19</td><td><code>logs/*-02-i2c-driver.log</code></td></tr>
+    <tr><td>03</td><td><code>kfifo</code> 环形缓冲 + <code>mmap</code> 零拷贝 + 多进程并发</td><td>40</td><td><code>logs/*-03-ringbuffer-mmap.log</code></td></tr>
+    <tr><td>04</td><td><code>sysfs</code> 设备参数 + <code>debugfs</code> 运行统计</td><td>53</td><td><code>logs/*-04-sysfs-debugfs.log</code></td></tr>
+    <tr><td>05</td><td>IIO 子系统（<code>triggered buffer</code> + <code>hrtimer trigger</code>）</td><td>22</td><td><code>logs/*-05-iio.log</code></td></tr>
+    <tr><td>06</td><td>Runtime PM + KUnit</td><td>32</td><td><code>logs/*-06-runtime-pm-kunit.log</code></td></tr>
+    <tr><td>回归</td><td><code>smoke</code> 基础功能回归</td><td>15</td><td><code>logs/*-smoke.log</code></td></tr>
+    <tr><td colspan="2" style="text-align:right"><strong>合计</strong></td><td><strong>197</strong></td><td>全部 <code>fail=0</code></td></tr>
+  </tbody>
+</table>
+
+<!-- ---------- 阶段 01 ---------- -->
+<h2 id="c5-1">5.1　阶段 01　四种 IO 模型</h2>
+
+<h3>要解决什么问题</h3>
+
+<p>起点是一个「只有阻塞 <code>read</code>」的字符设备。这意味着用户态<strong>没法把它接进事件循环</strong>
+（不能 <code>epoll</code>、不能异步通知），在实际应用里几乎不可用。</p>
+
+<p>核心认知：这四种模型<strong>不是四个功能，而是同一个事实的四种通知方式</strong> ——
+「现在有数据可读」这个事实，可以「让进程睡等」、「让进程稍后再来」、「让 epoll 告诉我」、「给我发信号」。</p>
+
+<table>
+  <thead><tr><th style="width:120px">模型</th><th>谁在等</th><th>内核怎么让对方知道</th></tr></thead>
+  <tbody>
+    <tr><td>阻塞 read</td><td>进程睡在内核里</td><td><code>wake_up()</code> 唤醒等待队列</td></tr>
+    <tr><td>非阻塞 read</td><td>没人等</td><td>返回 <code>-EAGAIN</code>，用户态自己重试</td></tr>
+    <tr><td>poll / epoll</td><td>用户态睡在 <code>epoll_wait</code></td><td>等待队列 + epoll 就绪队列</td></tr>
+    <tr><td>fasync / SIGIO</td><td>用户态在干别的</td><td>内核<strong>主动</strong>发信号</td></tr>
+  </tbody>
+</table>
+
+<h3>关键 API 与约束</h3>
+
+<pre><code><span class="cm">/* 阻塞：睡在等待队列上，最多等 SENSOR_READ_TIMEOUT_MS */</span>
+ret = wait_event_interruptible_timeout(
+        sd-&gt;wq, sensor_has_new_sample(sd),
+        msecs_to_jiffies(SENSOR_READ_TIMEOUT_MS));
+<span class="cm">/* 返回值语义一定要记准：</span>
+<span class="cm">   0  = 超时     &lt;0 = 被信号打断（-ERESTARTSYS）   &gt;0 = 条件满足（剩余 jiffies） */</span>
+
+<span class="cm">/* 非阻塞：驱动自己负责检查 O_NONBLOCK，VFS 不管 */</span>
+<span class="kw">if</span> (file-&gt;f_flags &amp; O_NONBLOCK)
+    <span class="kw">return</span> -EAGAIN;      <span class="cm">/* 必须返回 EAGAIN，不能返回 0 —— epoll 边沿触发依赖它 */</span>
+
+<span class="cm">/* poll：只做两件事，顺序不能反 */</span>
+<span class="kw">static</span> __poll_t sensor_poll(<span class="kw">struct</span> file *file, poll_table *wait)
+{
+    <span class="kw">struct</span> sensor_dev *sd = file-&gt;private_data;
+
+    poll_wait(file, &amp;sd-&gt;wq, wait);       <span class="cm">/* ① 先登记（只登记，不睡眠！） */</span>
+    <span class="kw">if</span> (sensor_has_new_sample(sd))
+        <span class="kw">return</span> EPOLLIN | EPOLLRDNORM;     <span class="cm">/* ② 再回答当前状态 */</span>
+    <span class="kw">return</span> 0;
+}
+
+<span class="cm">/* fasync + 发送侧 */</span>
+<span class="kw">static int</span> sensor_fasync(<span class="kw">int</span> fd, <span class="kw">struct</span> file *file, <span class="kw">int</span> on)
+{
+    <span class="kw">struct</span> sensor_dev *sd = file-&gt;private_data;
+    <span class="kw">return</span> fasync_helper(fd, file, on, &amp;sd-&gt;fasync);   <span class="cm">/* 链表维护交给辅助函数 */</span>
+}
+
+<span class="cm">/* 下半部里，紧跟 wake_up 之后：*/</span>
+wake_up_interruptible(&amp;sd-&gt;wq);
+kill_fasync(&amp;sd-&gt;fasync, SIGIO, POLL_IN);</code></pre>
+
+<div class="box danger">
+  <span class="t">这一步最容易踩的三个坑</span>
+  <ol style="margin-bottom:0">
+    <li><strong>顺序坑</strong>：先判断状态、再 <code>poll_wait</code> → 两步之间到达的新样本会丢唤醒（偶发卡死）。</li>
+    <li><strong>上下文坑</strong>：在 <code>.poll</code> 里睡眠或持锁。<code>.poll</code> 会被
+        <code>epoll_wait</code> 反复调用，只该做「登记 + 报状态」。</li>
+    <li><strong>释放顺序坑</strong>：<code>release()</code> 里先清 <code>private_data</code> 再摘 fasync → use-after-free。</li>
+  </ol>
+</div>
+
+<h3>怎么验证</h3>
+
+<p>用户态程序 <code>user/io_models_test.c</code> 把每项结果打印成 <code>[IO] 键=值</code>，
+测试脚本 <code>tests/phases/01-io-models.sh</code> 读取这些键并判定：</p>
+
+<table class="tight">
+  <thead><tr><th style="width:230px">检查项</th><th style="width:130px">判定</th><th>它专门证明什么</th></tr></thead>
+  <tbody>
+    <tr><td>非阻塞 read 返回 EAGAIN</td><td><code>nonblock_eagain=1</code></td><td>驱动真的遵循了 <code>O_NONBLOCK</code>（而不是当阻塞处理）</td></tr>
+    <tr><td><strong>首次唤醒延迟</strong></td><td><code>epoll_first_wakeup_ms ≤ 1000</code></td><td><strong>真的注册了等待队列</strong>（正确实现约 502ms；漏写 <code>poll_wait</code> 要睡满 2500ms）</td></tr>
+    <tr><td><strong>唤醒次数下界</strong></td><td><code>epoll_wakeups ≥ 3</code></td><td>不是只靠 <code>epoll_ctl(ADD)</code> 的首轮 <code>-&gt;poll</code> 骗过一次</td></tr>
+    <tr><td>唤醒次数上界</td><td><code>epoll_wakeups ≤ 12</code></td><td>没有忙轮询（错误的电平实现可达上万次）</td></tr>
+    <tr><td>消费后立刻不可读</td><td><code>poll_after_consume == 0</code></td><td>电平触发的「下界」</td></tr>
+    <tr><td>未消费时连续 5 次可读</td><td><code>poll_unread_hits == 5</code></td><td>电平触发的「上界」—— 可读状态必须<strong>持续存在</strong></td></tr>
+    <tr><td>SIGIO 到达</td><td><code>sigio_count ≥ 1</code></td><td>F_SETOWN + O_ASYNC + <code>kill_fasync</code> 整条链路通</td></tr>
+    <tr><td>ftrace 捕获 <code>kill_fasync</code></td><td>调用次数 ≥ 1</td><td>内核侧确实调用了发送函数（不只是用户态「看起来收到了」）</td></tr>
+  </tbody>
+</table>
+
+<div class="box tip">
+  <span class="t">为什么 SIGIO 计数通常是 1？</span>
+  <p>标准信号<strong>不排队</strong>：多个 SIGIO 会合并成一次 pending，所以收到 1 次是完全正常的。
+  判定用 <code>≥ 1</code> 而不是精确计数。想精确计数需要改用实时信号（<code>SIGRTMIN+n</code>）+ <code>F_SETSIG</code>。</p>
+</div>
+
+<!-- ---------- 阶段 02 ---------- -->
+<h2 id="c5-2">5.2　阶段 02　设备树解耦 + i2c_driver + regmap</h2>
+
+<h3>要解决什么问题</h3>
+
+<p>阶段 01 的驱动里，硬件参数是<strong>写死在代码里</strong>的（I2C 总线号、从机地址）。
+换一块板子就要改代码重新编译 —— 这就是「不可移植」。这个阶段把它变成
+<strong>标准的 <code>i2c_driver</code> 模型</strong>：参数全从设备树来，寄存器访问全走 <code>regmap</code>。</p>
+
+<h3>三步改造</h3>
+
+<ol class="steps">
+  <li><strong>自己造一个 I2C 控制器</strong>（<code>virt_i2c.c</code>）：写一个 <code>platform_driver</code>，
+      注册带 <code>of_node</code> 的 <code>i2c_adapter</code>，并用 <code>i2c_add_adapter</code> 之外的路径
+      提供「寄存器级」的读写模拟。<br>
+      <em>为什么不用内核自带的 <code>i2c-stub</code>？</em> 因为 stub 的 adapter <strong>没有设备树节点</strong>，
+      i2c 核心无法从它下面枚举出子设备。</li>
+  <li><strong>改成标准 i2c_driver</strong>：不再手工 <code>i2c_new_client_device()</code>，
+      而是注册 <code>i2c_driver</code> + <code>of_match_table</code>，让 i2c 核心去枚举设备树子节点并回调 <code>probe()</code>。</li>
+  <li><strong>用 regmap 替掉裸 I2C</strong>：<code>devm_regmap_init_i2c()</code> 之后，
+      读写变成 <code>regmap_read(sd-&gt;regmap, REG_TEMP, &amp;raw)</code>。</li>
+</ol>
+
+<pre><code><span class="cm">/* 设备树：控制器 → 子设备两级结构 */</span>
+virt_i2c: virt-i2c {
+    compatible = <span class="st">"lucien,virt-i2c"</span>;
+    #address-cells = &lt;0x01&gt;;
+    #size-cells    = &lt;0x00&gt;;
+    sensor0: sensor@48 {
+        compatible = <span class="st">"lucien,sensor-char"</span>;
+        reg = &lt;0x48&gt;;                 <span class="cm">/* ← i2c 核心解析后填进 client-&gt;addr */</span>
+        poll-interval-ms = &lt;0x1f4&gt;;
+    };
+};
+
+<span class="cm">/* 驱动：只匹配 compatible，什么都不用自己创建 */</span>
+<span class="kw">static const struct</span> of_device_id sensor_of_match[] = {
+    { .compatible = <span class="st">"lucien,sensor-char"</span> },
+    { }
+};
+MODULE_DEVICE_TABLE(of, sensor_of_match);
+
+<span class="kw">static int</span> sensor_probe(<span class="kw">struct</span> i2c_client *client)
+{
+    <span class="cm">/* 寄存器抽象：一次初始化，之后完全不碰 I2C API */</span>
+    sd-&gt;regmap = devm_regmap_init_i2c(client, &amp;sensor_regmap_cfg);
+    <span class="kw">if</span> (IS_ERR(sd-&gt;regmap)) <span class="kw">return</span> PTR_ERR(sd-&gt;regmap);
+    <span class="cm">/* ... */</span>
+}</code></pre>
+
+<div class="box good">
+  <span class="t">怎么判断你做到「解耦」了</span>
+  <p>在 <code>sensor_char.c</code> 里搜 <code>0x48</code>、搜总线号 —— <strong>应该一个都搜不到</strong>。
+  硬件地址只出现在设备树里。<code>client-&gt;addr</code> 由 i2c 核心自动填好，
+  驱动只管用。<strong>这是可移植性的可检验标准。</strong></p>
+</div>
+
+<h3>怎么验证</h3>
+
+<p>19 项检查，重点看这几类：设备树是否解析到 <code>compatible</code>、i2c client 是否被创建、
+从机地址是否等于 <code>0x48</code>、regmap 读写是否与模拟寄存器一致、模块加载顺序是否正确。</p>
+
+<!-- ---------- 阶段 03 ---------- -->
+<h2 id="c5-3">5.3　阶段 03　kfifo 环形缓冲 + mmap 零拷贝</h2>
+
+<h3>要解决什么问题</h3>
+
+<p>阶段 02 之前，驱动只保留<strong>最新一个样本</strong>（<code>latest</code>）。问题是：</p>
+
+<pre class="plain"><code>采样节奏由硬件决定：每 500ms 一个样本
+读取节奏由应用决定：可能 3 秒读一次，也可能一直不读
+
+→ 只保留最新值时，中间的样本就<strong>静默丢失</strong>了</code></pre>
+
+<p>这个阶段的数据通路是「<strong>一个生产者、两个出口</strong>」：</p>
+
+<pre><code>传感器寄存器 --I2C--&gt; 线程化中断处理（<span class="hl">唯一生产者</span>）
+                          ├── kfifo 环形缓冲（64 个样本）--waitqueue--&gt; read/poll/epoll/SIGIO
+                          └── mmap 共享页（seqlock 保护）-----------&gt; 用户态直接读（零拷贝）
+     另外保留 latest 供 ioctl(GET_SAMPLE) 立即取值</code></pre>
+
+<h3>两个关键技术点</h3>
+
+<h4>① kfifo 环形缓冲与溢出策略</h4>
+
+<pre><code><span class="cm">/* 生产（线程化中断里） */</span>
+<span class="kw">if</span> (kfifo_in_spinlocked(&amp;sd-&gt;ring, &amp;s, <span class="kw">sizeof</span>(s), &amp;sd-&gt;ring_lock) != <span class="kw">sizeof</span>(s)) {
+    sd-&gt;stats.kfifo_dropped++;      <span class="cm">/* ← 队列满：丢「新」样本，但计数 */</span>
+}
+
+<span class="cm">/* 消费（read 里） */</span>
+<span class="kw">if</span> (kfifo_out_spinlocked(&amp;sd-&gt;ring, &amp;snap, <span class="kw">sizeof</span>(snap), &amp;sd-&gt;ring_lock) == <span class="kw">sizeof</span>(snap))
+    <span class="kw">break</span>;                        <span class="cm">/* 取到了 */</span></code></pre>
+
+<div class="box tip">
+  <span class="t">为什么是「丢新不丢旧」？</span>
+  <ol style="margin-bottom:0">
+    <li>已排队的数据是「用户态还欠着没读的历史」，<strong>静默改写历史比丢新更难排查</strong>；</li>
+    <li><code>kfifo_dropped</code> 让「丢了多少」变成<strong>可观测量</strong>，而不是无声无息；</li>
+    <li>传感器数据通常是时序敏感的，保留更早的时间序列更有价值。</li>
+  </ol>
+  <p style="margin-top:8px">代价是最新样本可能进不了队列 —— 但它仍然在 <code>latest</code> / 共享页里，所以「读最新值」这条路径不受影响。</p>
+</div>
+
+<h4>② mmap 零拷贝与 seqlock</h4>
+
+<pre><code><span class="cm">/* read()   ：内核缓冲 --copy_to_user--&gt; 用户缓冲   每次读都要拷贝 + 一次系统调用</span>
+<span class="cm">/* mmap()   ：用户页表直接指向内核分配的物理页      不拷贝，之后取值完全在用户态 */</span>
+
+<span class="cm">/* 用户态：映射一页，直接读结构体 */</span>
+<span class="kw">struct</span> sensor_shm *shm = mmap(NULL, 4096, PROT_READ, MAP_SHARED, fd, 0);
+<span class="kw">do</span> {
+    seq = shm-&gt;seq_begin;          <span class="cm">/* 读前序号 */</span>
+    smp_rmb();
+    temp = shm-&gt;temperature_mc;    <span class="cm">/* 读数据 */</span>
+    smp_rmb();
+} <span class="kw">while</span> (shm-&gt;seq_end != seq);      <span class="cm">/* 序号变了 → 读到撕裂数据，重读 */</span></code></pre>
+
+<div class="box warn">
+  <span class="t">关键设计决策：为什么共享页<strong>不加锁</strong>而要自己实现 seqlock 语义？</span>
+  <p>因为 <strong>用户态不可能持有内核锁</strong>。你没法让用户进程在读取共享页时去拿内核的 mutex。
+  所以只能用「序号 + 内存屏障 + 重试」这种<strong>无锁但可检测撕裂</strong>的方案：</p>
+  <pre style="margin:8px 0 0"><code>写者：seq 变奇数 → smp_wmb() → 写数据 → smp_wmb() → seq 变偶数
+读者：读 seq（奇数说明正在写）→ 读数据 → 再读 seq，不一致就重读</code></pre>
+  <p style="margin-top:8px">这个决策是必须<strong>真正理解内核</strong>才能做对的，而且它在这个项目里用 <strong>KCSAN</strong>（内核并发检测器）验证过无数据竞争。</p>
+</div>
+
+<h3>怎么验证</h3>
+
+<p>40 项检查，是六个阶段里最多的。重点覆盖：多进程并发读写不丢数据、校验
+<code>ring_count + kfifo_dropped == irq_count</code> 这个<strong>守恒式</strong>、
+mmap 映射的权限与长度校验（必须只读、不能超过一页）、seqlock 重试逻辑是否真的能检测撕裂。</p>
+
+<!-- ---------- 阶段 04 ---------- -->
+<h2 id="c5-4">5.4　阶段 04　sysfs 与 debugfs</h2>
+
+<h3>要解决什么问题</h3>
+
+<p>驱动装上了，但你（和运维）怎么<strong>看见它在干什么</strong>？怎么在不改代码、不重编译的情况下调参数？
+这是生产驱动和玩具代码的分界线。</p>
+
+<table>
+  <thead><tr><th style="width:110px">子系统</th><th>定位</th><th>本项目暴露的内容</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><code>sysfs</code></td>
+      <td><strong>稳定 ABI</strong>，给用户态脚本和系统管理用</td>
+      <td><code>interval_ms</code>（采样周期，可读写）、<code>seq</code>、<code>i2c_errors</code>、<code>ring_capacity</code></td>
+    </tr>
+    <tr>
+      <td><code>debugfs</code></td>
+      <td><strong>调试用，无 ABI 保证</strong>，可以随时变</td>
+      <td><code>stats</code>（运行统计）、<code>ring</code>（环形缓冲内容）、<code>regs</code>（寄存器现场）</td>
+    </tr>
+  </tbody>
+</table>
+
+<pre><code><span class="cm">/* sysfs：一行代码定义属性，读写回调各自实现 */</span>
+<span class="kw">static</span> ssize_t interval_ms_show(<span class="kw">struct</span> device *dev, <span class="kw">struct</span> device_attribute *attr, <span class="kw">char</span> *buf)
+{
+    <span class="kw">struct</span> sensor_dev *sd = dev_get_drvdata(dev);
+    <span class="kw">return</span> sysfs_emit(buf, <span class="st">"%u\n"</span>, READ_ONCE(sd-&gt;interval_ms));
+}
+
+<span class="kw">static</span> ssize_t interval_ms_store(<span class="kw">struct</span> device *dev, <span class="kw">struct</span> device_attribute *attr,
+                                 <span class="kw">const char</span> *buf, size_t count)
+{
+    <span class="kw">struct</span> sensor_dev *sd = dev_get_drvdata(dev);
+    <span class="kw">unsigned long</span> v;
+    <span class="kw">if</span> (kstrtoul(buf, 0, &amp;v)) <span class="kw">return</span> -EINVAL;
+    <span class="cm">/* 范围校验 + 生效动作（重设 hrtimer 周期） */</span>
+    sensor_apply_interval(sd, v);
+    <span class="kw">return</span> count;
+}
+<span class="kw">static</span> DEVICE_ATTR_RW(interval_ms);   <span class="cm">/* 宏生成 show/store 配对 */</span></code></pre>
+
+<div class="box tip">
+  <span class="t">sysfs 与 debugfs 的分工，一句话记住</span>
+  <p><strong>sysfs 是接口（会被人依赖，改动要谨慎）；debugfs 是窗口（只给自己看，随便改）。</strong>
+  所以「采样周期」这种用户真正需要的参数放 sysfs，「内部计数器」这种调试信息放 debugfs。</p>
+</div>
+
+<div class="box warn">
+  <span class="t">写 <code>*_store</code> 回调的三个隐性要求</span>
+  <ol style="margin-bottom:0">
+    <li>返回值必须是 <code>count</code>（而不是 0），否则用户态的 <code>echo</code> 会报错；</li>
+    <li><strong>必须做范围校验</strong>：用户态可能写入 <code>0</code>、负数或超大值；</li>
+    <li>写入通常要触发生效动作（本项目要重设 hrtimer 周期），并考虑与并发读取的同步。</li>
+  </ol>
+</div>
+
+<h3>怎么验证</h3>
+
+<p>53 项 —— 数量最多，因为大多是「字段级」的断言：<code>ls</code> 属性是否存在、
+默认值是否正确、写入非法值是否被拒绝（权限与只读性）、<code>stats</code> 里的计数是否自洽等。
+<strong>权限位与只读性是重点</strong>：把只读属性写坏、或让普通用户能改关键参数，都是真实驱动里的常见漏洞。</p>
+
+<!-- ---------- 阶段 05 ---------- -->
+<h2 id="c5-5">5.5　阶段 05　IIO 子系统驱动</h2>
+
+<h3>要解决什么问题</h3>
+
+<p>前面四个阶段，你是<strong>自己造轮子</strong>：自定义 <code>fops</code>、自定义 ioctl、自定义 sysfs。
+这在玩具项目里可行，但真实内核有<strong>标准子系统</strong> —— 传感器类设备的标准答案是 <strong>IIO</strong>
+（Industrial I/O）。用 IIO 的好处是：内核里的通用工具（<code>iio_generic_buffer</code>、
+<code>libiio</code>）和硬件描述（<code>iio_chan_spec</code>）能直接复用。</p>
+
+<p>本项目<strong>两个驱动并存</strong>，这本身就是最好的对比教材：</p>
+
+<table>
+  <thead><tr><th style="width:150px"></th><th>字符设备版 <code>sensor_char.ko</code></th><th>IIO 版 <code>sensor_iio.ko</code></th></tr></thead>
+  <tbody>
+    <tr><td>绑定的从机</td><td>0x48</td><td>0x49（同一控制器，独立 bank）</td></tr>
+    <tr><td>用户态接口</td><td><code>/dev/sensor0</code> + 自定义 ioctl</td><td><code>/dev/iio:device0</code> + 标准 <code>iio_chan_spec</code></td></tr>
+    <tr><td>数据获取</td><td>自己写 read/poll/mmap</td><td><code>triggered buffer</code> + 触发器，由 IIO 核心管理</td></tr>
+    <tr><td>触发源</td><td>自己注册 <code>request_threaded_irq</code></td><td><code>hrtimer trigger</code>（IIO 的触发器框架）</td></tr>
+    <tr><td>通用工具支持</td><td>无</td><td>有（<code>iio_generic_buffer</code> 等）</td></tr>
+    <tr><td>代码量</td><td>1676 行</td><td><strong>368 行</strong></td></tr>
+  </tbody>
+</table>
+
+<div class="box good">
+  <span class="t">368 行 vs 1676 行，这就是「子系统」的价值</span>
+  <p>同样一个传感器，接入 IIO 只需要 368 行（而这个数字恰好落在真实内核 IIO 驱动的中位数
+  <strong>342 行</strong>附近）。因为「环形缓冲、字符设备注册、poll 语义、缓冲区管理」这些
+  IIO 核心已经做完了 —— <strong>你只写「这颗芯片的寄存器怎么读写、有哪些通道」。</strong></p>
+</div>
+
+<pre><code><span class="cm">/* 描述「我有哪些数据通道」—— 这是 IIO 驱动的核心数据结构 */</span>
+<span class="kw">static const struct</span> iio_chan_spec sensor_iio_channels[] = {
+    {
+        .type = IIO_TEMP,
+        .info_mask_separate = BIT(IIO_CHAN_INFO_RAW) |
+                              BIT(IIO_CHAN_INFO_SCALE),
+        .scan_index = 0,
+        .scan_type = { .sign = <span class="st">'s'</span>, .realbits = 16, .storagebits = 16 },
+    },
+    {
+        .type = IIO_HUMIDITYRELATIVE,
+        .info_mask_separate = BIT(IIO_CHAN_INFO_RAW) |
+                              BIT(IIO_CHAN_INFO_SCALE),
+        .scan_index = 1,
+        .scan_type = { .sign = <span class="st">'u'</span>, .realbits = 16, .storagebits = 16 },
+    },
+};
+
+<span class="kw">static int</span> sensor_iio_read_raw(<span class="kw">struct</span> iio_dev *indio_dev,
+                              <span class="kw">struct</span> iio_chan_spec <span class="kw">const</span> *chan,
+                              <span class="kw">int</span> *val, <span class="kw">int</span> *val2, <span class="kw">long</span> mask)
+{
+    <span class="kw">switch</span> (mask) {
+    <span class="kw">case</span> IIO_CHAN_INFO_RAW:      <span class="cm">/* 读原始值 */</span>
+        <span class="kw">return</span> IIO_VAL_INT;
+    <span class="kw">case</span> IIO_CHAN_INFO_SCALE:    <span class="cm">/* 换算比例：用户态拿 raw*scale 得到物理量 */</span>
+        *val = 1; *val2 = 1000;
+        <span class="kw">return</span> IIO_VAL_INT_PLUS_MICRO;
+    }
+    <span class="kw">return</span> -EINVAL;
+}</code></pre>
+
+<h3>怎么验证</h3>
+
+<p>22 项：<code>/dev/iio:device0</code> 是否出现、<code>iio_chan_spec</code> 是否被正确导出
+（<code>/sys/bus/iio/devices/iio:device0/</code> 下的 <code>in_temp_raw</code> 等）、
+<code>triggered buffer</code> 是否能被 trigger 推着跑、以及两个驱动同时加载互不干扰。</p>
+
+<!-- ---------- 阶段 06 ---------- -->
+<h2 id="c5-6">5.6　阶段 06　Runtime PM 与 KUnit</h2>
+
+<h3>要解决什么问题</h3>
+
+<p>两件看似无关、但都是「从能跑变成专业」的事：</p>
+
+<ol>
+  <li><strong>省电</strong>：设备空闲时应该能自动挂起（Runtime PM），否则手机/嵌入式设备的电池撑不住；</li>
+  <li><strong>可测</strong>：把纯逻辑抽出来做单元测试（KUnit），而不是每次都启动 QEMU 做集成测试。</li>
+</ol>
+
+<h3>① Runtime PM：引用计数模型</h3>
+
+<pre><code><span class="cm">/* open：占一个引用 —— 只要有人打开着，就不允许自动挂起 */</span>
+<span class="kw">static int</span> sensor_open(<span class="kw">struct</span> inode *inode, <span class="kw">struct</span> file *file)
+{
+    <span class="kw">struct</span> sensor_dev *sd = ...;
+    <span class="kw">int</span> ret = pm_runtime_resume_and_get(&amp;sd-&gt;client-&gt;dev);
+    <span class="cm">/*      ↑ 用 _and_get 而不是 pm_runtime_get_sync：</span>
+    <span class="cm">       后者在出错时会留下一个引用，导致设备再也挂不下去（经典泄漏） */</span>
+    <span class="kw">if</span> (ret &lt; 0) <span class="kw">return</span> ret;
+    ...
+}
+
+<span class="cm">/* close：归还引用，并按 autosuspend 延迟安排挂起 */</span>
+<span class="kw">static int</span> sensor_release(<span class="kw">struct</span> inode *inode, <span class="kw">struct</span> file *file)
+{
+    pm_runtime_mark_last_busy(dev);      <span class="cm">/* 记录「最后一次使用时刻」 */</span>
+    pm_runtime_put_autosuspend(dev);     <span class="cm">/* 引用归零后，延迟 1 秒再挂起 */</span>
+}
+
+<span class="cm">/* 挂起/恢复回调：真正断电断时钟的地方 */</span>
+<span class="kw">static int</span> sensor_runtime_suspend(<span class="kw">struct</span> device *dev) { ... }
+<span class="kw">static int</span> sensor_runtime_resume(<span class="kw">struct</span> device *dev)  { ... }</code></pre>
+
+<div class="box tip">
+  <span class="t">为什么 open 时要「抓住」一个 PM 引用？</span>
+  <p>否则会出现这种情况：进程正在 <code>read()</code> 阻塞等数据，此时设备因为「空闲」被自动挂起，
+  <strong>采样停了</strong>，进程就一直等到超时 —— 用户看到的现象是「驱动坏了」。
+  <strong>引用计数就是用来表达「有人在用，别关」的。</strong></p>
+</div>
+
+<h3>② KUnit：把纯逻辑抽出来测</h3>
+
+<p>关键设计：把温湿度换算公式抽到一个<strong>纯头文件</strong> <code>sensor_calc.h</code>（99 行，无内核依赖），
+这样 KUnit 模块可以直接测它，不需要真实硬件、不需要 QEMU 全流程。</p>
+
+<pre><code><span class="kw">static void</span> sensor_calc_temp_test(<span class="kw">struct</span> kunit *test)
+{
+    <span class="cm">/* 表驱动：输入原始寄存器值 → 期望的物理量（毫摄氏度） */</span>
+    KUNIT_EXPECT_EQ(test, <span class="kw">sensor_raw_to_milli_celsius</span>(0x0000), -40000);
+    KUNIT_EXPECT_EQ(test, <span class="kw">sensor_raw_to_milli_celsius</span>(0x7FFF), 125000);
+    <span class="cm">/* 边界值：负温度、量程两端 */</span>
+}
+
+<span class="kw">static struct</span> kunit_suite sensor_calc_suite = {
+    .name  = <span class="st">"sensor_calc"</span>,
+    .test_cases = sensor_calc_test_cases,
+};
+kunit_test_suite(sensor_calc_suite);</code></pre>
+
+<div class="box good">
+  <span class="t">为什么 KUnit 能编成外部模块？</span>
+  <p>因为 <code>kunit_*</code> 系列符号在内核里是 <code>EXPORT_SYMBOL_GPL</code>，
+  而本模块是 GPL 许可 —— 所以可以直接 <code>insmod</code> 一个 KUnit 测试模块，
+  <strong>不需要把测试编进内核</strong>。这也是为什么项目必须用 GPL 兼容许可（见 LICENSE）。</p>
+</div>
+
+<h3>怎么验证</h3>
+
+<p>32 项：Runtime PM 的引用计数是否正确增减、<code>open</code> 期间是否真的不会挂起、
+<code>close</code> 后 1 秒是否真的挂起、恢复后采样是否继续；KUnit 套件的 5 个用例
+是否 <code>pass:5 fail:0</code>（判定同时看用例名与计数）。</p>
+
+<!-- ============================== 第 6 章 ============================== -->
+<h1 id="c6">第 6 章　测试方法论：本书最值钱的一章</h1>
+
+<p class="lead-in">
+  前面五章讲「怎么写驱动」，这一章讲<strong>「怎么证明你写对了」</strong>。
+  绝大多数人跳过这一章，然后在面试时被一句「你怎么知道你的测试有效？」问住。
+</p>
+
+<h2 id="c6-1">6.1　检查项要能当结论读</h2>
+
+<div class="grid2">
+  <div class="box danger" style="margin:0">
+    <span class="t">✗ 差的检查项</span>
+    <pre style="margin:0;border-left-color:#9c1c1c"><code>[CHECK:PASS] 检查1
+[CHECK:PASS] poll 测试
+[CHECK:PASS] 功能正常</code></pre>
+  </div>
+  <div class="box good" style="margin:0">
+    <span class="t">✓ 好的检查项</span>
+    <pre style="margin:0;border-left-color:#155724"><code>[CHECK:PASS] 非阻塞 read 返回 EAGAIN（实测 1 次）
+[CHECK:PASS] poll 为电平触发、无忙轮询（3 秒内仅唤醒 7 次）
+[CHECK:PASS] ftrace 捕获到 kill_fasync 调用（实测 8 次）</code></pre>
+  </div>
+</div>
+
+<p>两个要求：</p>
+<ol>
+  <li><strong>名字本身要能当结论读</strong>（而不是「检查1」「功能正常」）；</li>
+  <li><strong>把实测值写进名字里</strong> —— 这样半年后从日志复查时，你能看出「7 次」是不是异常。</li>
+</ol>
+
+<h2 id="c6-2">6.2　什么叫「假绿」</h2>
+
+<div class="box danger">
+  <span class="t">定义</span>
+  <p><strong>假绿：测试全 PASS，但被测的东西其实是错的。</strong>
+  这比「测试失败」危险得多 —— 失败会逼你去修，假绿会让你带着 bug 继续往上盖楼。</p>
+</div>
+
+<p>本项目真实发生过一次，而且抓它的方法很值得学：</p>
+
+<table>
+  <thead><tr><th style="width:180px">项目</th><th>内容</th></tr></thead>
+  <tbody>
+    <tr><td>怎么发现的</td><td>独立验证者做了一个<strong>破坏性变体</strong>：把 <code>sensor_poll()</code> 里的 <code>poll_wait()</code> 注释掉，重新编译，跑同一套测试</td></tr>
+    <tr><td>结果</td><td><strong>9 项依然全 PASS</strong> —— 说明这套测试根本测不出「有没有注册等待队列」</td></tr>
+    <tr><td>为什么</td><td>当时的判定是「<code>epoll_wait</code> 至少返回过一次可读」。而 <code>epoll_ctl(ADD)</code> 时内核会<strong>立刻调一次</strong> <code>-&gt;poll</code>，此时队列里恰好有数据，fd 就直接进了就绪队列。第一次 <code>epoll_wait</code> 立即返回 —— <strong>完全不需要 <code>poll_wait</code></strong></td></tr>
+    <tr><td>真正的危害</td><td>不是「驱动写错了」，而是<strong>回归保护是假的</strong>：后续阶段都会改 <code>read</code>/<code>poll</code> 的数据源，任何一次重构删掉 <code>poll_wait</code> 都会静默全绿</td></tr>
+  </tbody>
+</table>
+
+<h2 id="c6-3">6.3　负控实验：证明你的测试会失败</h2>
+
+<p><strong>负控实验（Negative Control）</strong>：主动往代码里注入一个已知缺陷，然后验证
+「测试套件必须失败」。如果它仍然全绿，说明测试无效。</p>
+
+<pre><code><span class="cm"># 注入缺陷（只注释掉一行 —— 这是最小可检测的破坏）</span>
+sed -i<span class="st">''</span> -e <span class="st">'s|^\tpoll_wait(file, &amp;sd-&gt;wq, wait);|/* 负控实验（临时） */|'</span> driver/sensor_char.c
+
+<span class="cm"># 重新构建 + 跑同一套测试</span>
+limactl shell dev bash -c <span class="st">'TEST=01-io-models bash scripts/13-vm-fast-cycle.sh'</span>
+bash scripts/21-macos-sync-artifacts.sh
+bash scripts/22-macos-run-test.sh 01-io-models 180        <span class="cm"># → 11 PASS / 5 FAIL ✓ 抓住了</span>
+
+<span class="cm"># 恢复并复验</span>
+git checkout -- driver/sensor_char.c
+limactl shell dev bash -c <span class="st">'TEST=01-io-models bash scripts/13-vm-fast-cycle.sh'</span>
+bash scripts/21-macos-sync-artifacts.sh &amp;&amp; bash scripts/22-macos-run-test.sh 01-io-models 180   <span class="cm"># → 16 PASS</span></code></pre>
+
+<table>
+  <thead><tr><th style="width:190px">实验</th><th>驱动</th><th>结果</th></tr></thead>
+  <tbody>
+    <tr><td>A 健康驱动</td><td>正常</td><td><span class="tag ok">16 PASS / 0 FAIL</span></td></tr>
+    <tr><td>B <strong>负控</strong></td><td>漏写 <code>poll_wait()</code></td><td><span class="tag no">11 PASS / 5 FAIL</span> ← 成功抓住</td></tr>
+    <tr><td>C 恢复后</td><td>正常</td><td><span class="tag ok">16 PASS / 0 FAIL</span></td></tr>
+  </tbody>
+</table>
+
+<div class="box warn">
+  <span class="t">负控实验必须遵守的纪律：绝不在交付目录里做</span>
+  <p>项目里真实发生过两次事故：</p>
+  <ul style="margin-bottom:0">
+    <li><strong>阶段 05</strong>：实现者做完负控（把触发器里的温/湿度通道互换，留了
+        <code>NEGCTRL-B</code> 标记）<strong>忘记还原</strong>就汇报「全绿」。
+        结果交付源码开箱即 <strong>19 PASS / 3 FAIL</strong> —— 被别人重建后当场复现。</li>
+    <li><strong>阶段 06</strong>：验证者做负控时，编辑器报错但文件其实已被写入，
+        残留了 <code>/* NC-... */</code> 改动。</li>
+  </ul>
+  <p style="margin-top:8px"><strong>正确做法三选一</strong>：① 复制 <code>driver/</code> 到独立目录改副本；
+  ② <code>git worktree add</code> 另开一棵树；③ 实验后 <code>git checkout -- &lt;file&gt;</code> 并<strong>逐文件比对 sha256</strong>。</p>
+</div>
+
+<div class="box tip">
+  <span class="t">「git 是干净的」不能证明交付文件没被污染</span>
+  <p>因为新增的交付文件常常是 <strong>untracked</strong>，<code>git status</code> 只显示「有新文件」，
+  看不到内容被改过。所以项目里有一个专门的<strong>交付门禁</strong>：</p>
+  <pre style="margin:8px 0 0"><code>bash scripts/23-check-worktree-clean.sh</code></pre>
+  <p style="margin-top:8px">它扫描代码里的 <code>NC-</code> / <code>NEGCTRL</code> / <code>EXPERIMENT</code> 标记、
+  被注释掉的关键语句、以及未跟踪文件的 sha256。</p>
+</div>
+
+<h2 id="c6-4">6.4　三条可复用的原则</h2>
+
+<h3>原则一：上界检查抓不到「太少」</h3>
+
+<p>当时套件里有 <code>epoll_wakeups ≤ 12</code>（用来抓忙轮询）。坏驱动的实测值是 <strong>0 次</strong>，
+而 <code>0 ≤ 12</code> 照样 PASS。<strong>上界与下界必须成对出现。</strong></p>
+
+<table class="tight">
+  <thead><tr><th style="width:210px">检查</th><th>抓什么</th><th>坏驱动实测</th></tr></thead>
+  <tbody>
+    <tr><td><code>epoll_wakeups ≤ 12</code>（上界）</td><td>忙轮询（消费后仍报可读）</td><td>0 —— <span class="tag ok">PASS（漏了）</span></td></tr>
+    <tr><td><code>epoll_wakeups ≥ 3</code>（下界）</td><td>根本没注册等待队列</td><td>0 —— <span class="tag no">FAIL（抓到）</span></td></tr>
+    <tr><td><code>epoll_first_wakeup_ms ≤ 1000</code>（延迟）</td><td>同上，且分辨力最强</td><td>2503ms —— <span class="tag no">FAIL（抓到）</span></td></tr>
+  </tbody>
+</table>
+
+<h3>原则二：状态类断言要双向</h3>
+
+<p>「电平触发」有两半，必须都测：</p>
+<ul>
+  <li><strong>下界</strong>：消费掉数据后，poll <strong>立刻</strong>不再可读（<code>poll_after_consume == 0</code>）；</li>
+  <li><strong>上界</strong>：没消费时，poll <strong>持续</strong>可读（<code>poll_unread_hits == 5</code>，连续 5 次都要为真）。</li>
+</ul>
+<p>只测前半边的话，「one-shot 式」的错误实现也能通过。</p>
+
+<h3>原则三：取不到值，就用必然失败的默认值</h3>
+
+<pre><code><span class="cm">/* 用户态程序没有输出这个键时，不要当作「跳过」，而要当作「失败」 */</span>
+epoll_first_wakeup_ms=$(val_or <span class="st">"$OUT"</span> epoll_first_wakeup_ms 99999)
+poll_after_consume=$(val_or   <span class="st">"$OUT"</span> poll_after_consume   1)     <span class="cm">/* 1 = 失败 */</span>
+poll_unread_hits=$(val_or     <span class="st">"$OUT"</span> poll_unread_hits     0)     <span class="cm">/* 0 = 失败 */</span></code></pre>
+
+<p>否则会出现这种情况：<strong>只要删掉用户态程序的打印语句，测试就全绿了</strong>。</p>
+
+<p>同理，<strong>「能力检测」不能静默跳过</strong>：原本 ftrace 用不了时该项直接跳过，
+导致检查数从 9 悄悄变成 8 却仍显示全绿。修复方式是把它变成一个<strong>显式检查项</strong>
+（<code>FT_OK == 1</code>），能力缺失要体现在结论里，而不是消失。</p>
+
+<h2 id="c6-5">6.5　完整案例：漏写一行 poll_wait 如何被抓</h2>
+
+<table>
+  <thead><tr><th style="width:250px">失败检查项</th><th>实测值（原始日志）</th></tr></thead>
+  <tbody>
+    <tr><td>首次唤醒延迟 ≤ 1000ms</td><td><code>[IO] epoll_first_wakeup_ms=2503</code>　← 睡满超时</td></tr>
+    <tr><td>poll 唤醒次数下界 ≥ 3</td><td><code>[IO] epoll_wakeups=0</code>　← 一次都没被唤醒</td></tr>
+    <tr><td>epoll 在 3 秒窗口内报告可读</td><td><code>[IO] epoll_wait_ok=0</code></td></tr>
+    <tr><td>io_models_test 退出码为 0</td><td>实际 1</td></tr>
+    <tr><td>程序整体结论为 PASS</td><td><code>[IO] OVERALL=FAIL</code></td></tr>
+  </tbody>
+</table>
+
+<p><strong>两条新增检查独立抓住同一缺陷</strong>（延迟 2503ms + 唤醒数 0），而且都是
+<strong>原始实测数值</strong>，不是程序自述的字符串。对照之下，「唤醒次数上界 ≤ 12」
+在坏驱动上仍是 PASS（<code>0 ≤ 12</code>）—— 这正好解释了为什么上一版抓不到。</p>
+
+<div class="box good">
+  <span class="t">这就是「可证伪」的含义</span>
+  <p>一个测试只有在<strong>「被测对象错了它会失败」</strong>时才有意义。
+  想验证这一点，唯一的方法就是<strong>真的把它弄错一次，看它会不会失败</strong>。
+  这也是这个项目在简历上最有说服力的一句话：
+  <em>用负控实验证明了测试套件真的能失败，并据此发现并修复了 3 处「假绿」缺口</em>。</p>
+</div>
+
+<!-- ============================== 第 7 章 ============================== -->
+<h1 id="c7">第 7 章　调试手册</h1>
+
+<h2 id="c7-1">7.1　三条调试路径</h2>
+
+<table>
+  <thead><tr><th style="width:110px">工具</th><th>回答什么问题</th><th>成本</th></tr></thead>
+  <tbody>
+    <tr><td><code>dmesg</code></td><td>内核说了什么（报错、告警、驱动自己的日志）</td><td>最低，先看它</td></tr>
+    <tr><td><code>ftrace</code></td><td>内核<strong>在做什么</strong>（函数调用序列、耗时）</td><td>中，需要理解 tracing 机制</td></tr>
+    <tr><td><code>GDB</code></td><td>内核<strong>此刻的状态</strong>（变量值、调用栈、单步）</td><td>最高，但能看穿一切</td></tr>
+  </tbody>
+</table>
+
+<h2 id="c7-2">7.2　dmesg：最便宜的信息源</h2>
+
+<pre><code><span class="cm"># 看内核告警（在 QEMU 控制台里）</span>
+dmesg | grep -E <span class="st">"WARNING|BUG|Call trace"</span>
+
+<span class="cm"># 看自己的驱动日志（项目规定用 dev_info/dev_err，不用裸 printk）</span>
+dmesg | grep -i sensor</code></pre>
+
+<div class="box tip">
+  <span class="t">把「无告警」也变成一个检查项</span>
+  <p>项目里每个阶段的测试脚本最后都有一项 <code>dmesg 无 WARNING/Call trace</code>。
+  这很关键 —— <strong>驱动「能跑」和「干净」是两件事</strong>，很多 bug 只表现为一行 WARNING。
+  注意 <code>Unknown kernel command line parameters</code> 这类 <code>pr_warn</code>
+  不带 <code>WARNING:</code> 前缀，不会命中告警检查。</p>
+</div>
+
+<h2 id="c7-3">7.3　ftrace：看内核在做什么</h2>
+
+<pre><code><span class="cm"># 1) 选择「按函数过滤」模式</span>
+TR=/sys/kernel/tracing
+echo <span class="kw">function</span> &gt; $TR/current_tracer
+
+<span class="cm"># 2) 只关心这一个函数</span>
+echo kill_fasync &gt; $TR/set_ftrace_filter
+
+<span class="cm"># 3) 开始录制</span>
+echo 1 &gt; $TR/tracing_on
+<span class="cm"># ... 让被测代码跑起来 ...</span>
+
+<span class="cm"># 4) ★ 关键顺序：先停 tracing，读走结果，最后才切回 nop</span>
+echo 0 &gt; $TR/tracing_on
+grep -c kill_fasync $TR/trace          <span class="cm"># ← 必须在下一行之前读！</span>
+echo nop &gt; $TR/current_tracer          <span class="cm"># 切回 nop 会清空 trace 缓冲区</span></code></pre>
+
+<div class="box warn">
+  <span class="t">这个坑真实踩过：ftrace 证据永远是 0</span>
+  <p>当时脚本在<strong>把 <code>current_tracer</code> 切回 <code>nop</code> 之后</strong>才去读 <code>trace</code> 文件 ——
+  而切换 tracer <strong>会清空 trace 环形缓冲区</strong>，所以永远读到 0。
+  排查过程也很典型：SIGIO 明明收到了（<code>sigio_count=1</code>），说明 <code>kill_fasync</code> 必然被调用过，
+  所以问题一定出在<strong>采集方式</strong>而不是代码。修复后捕获到 8 次调用。</p>
+</div>
+
+<h2 id="c7-4">7.4　GDB：单步调试内核</h2>
+
+<p>内核模块是运行时才加载的，所以 GDB 一开始不知道它的加载地址（会显示 <code>??</code>）。
+需要手动把模块的符号加进去：</p>
+
+<pre><code><span class="cm"># 1) 在宿主上启动 GDB（连 QEMU 的 gdbstub，端口由 05 脚本配置）</span>
+bash scripts/05-debug-gdb.sh
+
+<span class="cm"># 2) 在 GDB 里：先让内核起来并 insmod 模块，再加载符号</span>
+(gdb) target remote :1234
+(gdb) <span class="kw">continue</span>
+<span class="cm"># ... 等模块加载完 ...</span>
+(gdb) add-symbol-file /path/to/sensor_char.ko 0x&lt;text段加载地址&gt;
+(gdb) <span class="kw">break</span> sensor_irq_thread
+(gdb) <span class="kw">continue</span></code></pre>
+
+<div class="box tip">
+  <span class="t">模块加载地址从哪来</span>
+  <p>加载模块后在内核日志里能看到各段的基地址；也可以在 QEMU 控制台里
+  <code>cat /sys/module/sensor_char/sections/.text</code> 直接读。
+  把 <code>.text</code> 的地址给 <code>add-symbol-file</code> 即可。</p>
+</div>
+
+<!-- ============================== 第 8 章 ============================== -->
+<h1 id="c8">第 8 章　常见坑速查表</h1>
+
+<p class="lead-in">这张表里的每一条都是真实踩过的。遇到问题时先来这里对照。</p>
+
+<table>
+  <thead><tr><th style="width:290px">现象</th><th>根因</th><th>处理</th></tr></thead>
+  <tbody>
+    <tr>
+      <td>内核编译 <code>Syntax error: word unexpected</code></td>
+      <td>源码树混入 macOS Mach-O 产物</td>
+      <td>从官方 tarball 重新解压</td>
+    </tr>
+    <tr>
+      <td><code>unknown type name 'uuid_t'</code></td>
+      <td>树里 <code>file2alias.c</code> 被改过</td>
+      <td>同上</td>
+    </tr>
+    <tr>
+      <td><code>redefinition of 'struct list_head'</code></td>
+      <td>glibc 头文件与内核 <code>tools/include</code> 冲突</td>
+      <td>加 include guard（补丁已存档）</td>
+    </tr>
+    <tr>
+      <td>宿主工具编译报结构体成员错误</td>
+      <td>gcc 版本过新</td>
+      <td><code>CC=gcc-13 HOSTCC=gcc-13</code></td>
+    </tr>
+    <tr>
+      <td>写 ftrace 后 QEMU 卡死</td>
+      <td><code>-accel hvf</code> 与 ftrace 冲突</td>
+      <td>用 <code>-accel tcg -cpu cortex-a72</code></td>
+    </tr>
+    <tr>
+      <td>ftrace 结果永远是 0</td>
+      <td>读完 <code>trace</code> 之前就切回了 <code>nop</code>（清空缓冲区）</td>
+      <td>先 <code>tracing_on=0</code>，读 trace，最后才切 nop</td>
+    </tr>
+    <tr>
+      <td>设备树报 <code>Properties must precede subnodes</code></td>
+      <td>节点被插到了根节点属性中间</td>
+      <td>插到根节点闭合括号之前</td>
+    </tr>
+    <tr>
+      <td>模块加载失败 <code>invalid module format</code></td>
+      <td>模块与 <code>Image</code> 不同源</td>
+      <td>永远用同一棵内核树编模块，刷新 <code>artifacts/Image</code></td>
+    </tr>
+    <tr>
+      <td>VM 里怎么都写不进文件</td>
+      <td>宿主 <code>$HOME</code> 在 VM 里是<strong>只读</strong>挂载</td>
+      <td>去 VM 自己的 <code>~/</code> 里写</td>
+    </tr>
+    <tr>
+      <td>换测试名字，跑的还是旧阶段的检查项</td>
+      <td>initramfs 是构建时「烤」进去的</td>
+      <td>用内核命令行 <code>test=&lt;阶段&gt;</code>（<code>22</code> 脚本自动传）</td>
+    </tr>
+    <tr>
+      <td>明明删了代码，测试还是全绿</td>
+      <td><strong>假绿</strong> —— 测试没有覆盖到那个行为</td>
+      <td>做负控实验，见第 6 章</td>
+    </tr>
+    <tr>
+      <td>交付后别人重建，开箱就 FAIL</td>
+      <td>负控实验的改动没还原</td>
+      <td>跑 <code>scripts/23-check-worktree-clean.sh</code> 门禁</td>
+    </tr>
+  </tbody>
+</table>
+
+<!-- ============================== 第 9 章 ============================== -->
+<h1 id="c9">第 9 章　从实验到真机，以及面试怎么讲</h1>
+
+<h2 id="c9-1">9.1　移植到真机只需改三处</h2>
+
+<p>这个项目虽然是虚拟环境，但<strong>驱动代码本身是真机上能用的</strong>。以「树莓派 + SHT30 传感器」为例：</p>
+
+<table>
+  <thead><tr><th style="width:55px">#</th><th style="width:200px">改什么</th><th>怎么改</th></tr></thead>
+  <tbody>
+    <tr>
+      <td>1</td>
+      <td><strong>设备树</strong></td>
+      <td>不再用虚拟控制器，把节点挂到真实的 <code>&amp;i2c1</code> 下面，
+          从机地址改成 <code>0x44</code>（SHT30）</td>
+    </tr>
+    <tr>
+      <td>2</td>
+      <td><strong>拿 adapter 的方式</strong></td>
+      <td>用 <code>of_find_i2c_adapter_by_node()</code> 从父节点取，而不是读 <code>i2c-bus</code> 编号</td>
+    </tr>
+    <tr>
+      <td>3</td>
+      <td><strong>读数据的命令字与换算公式</strong></td>
+      <td><code>sensor_irq_thread()</code> 里换成 SHT30 的读数命令
+          （<code>i2c_smbus_write_i2c_block_data</code> + <code>i2c_master_recv</code>），
+          换算改成 <code>-45 + 175 * S / 65535</code></td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="box tip">
+  <span class="t">为什么只要改三处？</span>
+  <p>因为「设备树解耦」做对了 —— 硬件地址不在代码里。
+  <strong>这正是阶段 02 的价值所在，也是移植时的直接回报。</strong>
+  中断那条路径（<code>request_threaded_irq</code> + 上下半部）在真机上<strong>一行都不用改</strong>：
+  实验里是 hrtimer 触发虚拟中断，真机上是传感器 ALERT 引脚接到 GIC，驱动看到的东西是一样的。</p>
+</div>
+
+<h2 id="c9-2">9.2　面试怎么讲这个项目</h2>
+
+<h3>错误讲法（大多数人这样讲）</h3>
+
+<div class="box danger" style="margin:0">
+  <p style="margin:0">「我写了一个 Linux 字符设备驱动，实现了 read/write/ioctl，用 I2C 读温湿度传感器，还做了 IIO 和 Runtime PM。」</p>
+  <p style="margin:8px 0 0"><strong>问题</strong>：这是<em>清单罗列</em>，面试官无法判断你做得多深，也无法区分你和「跟着教程敲了一遍」的人。</p>
+</div>
+
+<h3>正确讲法（讲「为什么」和「怎么证明」）</h3>
+
+<div class="box good">
+  <p><strong>1）先讲一个具体的技术决策</strong></p>
+  <p>「mmap 共享页我<strong>没有加锁</strong>，而是自己实现了 seqlock 语义 —— 因为用户态不可能持有内核锁，
+  所以只能用『序号 + 内存屏障 + 重试』来检测撕裂。这里用了 <code>smp_wmb</code> 和 <code>READ_ONCE</code>，
+  并用 <strong>KCSAN</strong> 验证过无数据竞争。」</p>
+
+  <p><strong>2）再讲你怎么证明它是对的</strong></p>
+  <p>「我做了<strong>负控实验</strong>：主动往代码里注入缺陷（比如注释掉 <code>poll_wait</code>、互换温湿度通道），
+  验证测试套件必须失败。第一次做的时候发现 —— 删掉 <code>poll_wait</code> 后测试<strong>依然全绿</strong>，
+  说明我的测试是无效的。后来我加了『首次唤醒延迟』这个观测量才抓住它：
+  正确实现是 502ms（约一个采样周期），坏驱动是 2503ms（睡满超时）。
+  我用这个方法一共发现并修复了 <strong>3 处「假绿」缺口</strong>。」</p>
+
+  <p><strong>3）最后说规模与广度</strong></p>
+  <p>「4 个内核模块，用到了 40 个内核子系统头文件 —— I2C、regmap、irq_chip/irq_domain、kfifo、mmap、
+  poll/epoll、fasync、sysfs、debugfs、Runtime PM、IIO、KUnit。7 套自动化测试共 <strong>197 项断言</strong>。」</p>
+</div>
+
+<div class="box warn">
+  <span class="t">三个要避开的坑</span>
+  <ol style="margin-bottom:0">
+    <li><strong>不要报代码行数。</strong>面试官 clone 下来跑 <code>cloc</code> 会对不上
+        （注释占 40%）。要用「模块数 / 子系统数 / 断言数」这类<strong>可核验</strong>的说法。</li>
+    <li><strong>不要回避「虚拟硬件」。</strong>主动说：「我用虚拟控制器替代真实传感器，
+        目的是让整条链路可复现、可注入故障。移植到真机只需改三处 —— 设备树、取 adapter 的方式、换算公式。」
+        <em>主动承认 + 给出补救方案，比被追问出来好得多。</em></li>
+    <li><strong>准备被问「你怎么知道测试有效」。</strong>这是最能拉开差距的问题，
+        而你有现成的、带日志证据的答案（第 6 章）。</li>
+  </ol>
+</div>
+
+<h2 id="c9-3">9.3　继续深入的学习路线</h2>
+
+<table>
+  <thead><tr><th style="width:55px">顺序</th><th>做什么</th><th>收获</th></tr></thead>
+  <tbody>
+    <tr>
+      <td>1</td>
+      <td><strong>亲手做破坏性实验</strong>：注释掉 <code>poll_wait</code>、把 <code>-EAGAIN</code> 改成 <code>return 0</code>、
+          把 <code>poll_wait</code> 移到状态判断之后</td>
+      <td>亲眼看到「假绿」被抓住、ET 模式失效、丢唤醒。<strong>比读十遍文档管用。</strong></td>
+    </tr>
+    <tr>
+      <td>2</td>
+      <td>读内核源码：<code>fs/select.c</code> 的 <code>do_poll()</code>、
+          <code>fs/eventpoll.c</code> 的 <code>ep_item_poll()</code>、<code>kernel/sched/wait.c</code></td>
+      <td>看清「驱动只登记、VFS 才睡」这条完整链路</td>
+    </tr>
+    <tr>
+      <td>3</td>
+      <td>读真实驱动：<code>drivers/iio/temperature/tmp007.c</code>（584 行）、
+          <code>drivers/hwmon/</code> 下挑一个</td>
+      <td>看工业代码怎么组织；对照本项目看差异</td>
+    </tr>
+    <tr>
+      <td>4</td>
+      <td>移植到真机（树莓派 + SHT30，成本约 ¥100）</td>
+      <td>把「模拟」变成「实战」，这一条在面试里价值最大</td>
+    </tr>
+    <tr>
+      <td>5</td>
+      <td>给内核提一个真 patch（<code>drivers/staging</code> 里挑个小驱动修 bug）</td>
+      <td>拿到 <code>Reviewed-by:</code> 就是第三方背书 —— 简历上的量级跃迁</td>
+    </tr>
+  </tbody>
+</table>
+
+<!-- ============================== 附录 A ============================== -->
+<h1 id="ca-1">附录 A　命令速查</h1>
+
+<h2>环境与构建</h2>
+<pre><code><span class="cm"># 一次性环境准备</span>
+bash scripts/01-setup-macos.sh &amp;&amp; bash scripts/02-setup-vm.sh
+limactl shell dev
+bash <span class="st">"$PWD/scripts/03-build-all-vm.sh"</span>
+
+<span class="cm"># 编一个带 KCSAN 的内核（并发检测用）</span>
+bash scripts/15-vm-build-kcsan.sh</code></pre>
+
+<h2>日常开发循环（约 20~40 秒一轮）</h2>
+<pre><code><span class="cm"># ① 编译 + 打包（约 10 秒）</span>
+limactl shell dev bash -c <span class="st">'TEST=&lt;阶段&gt; bash /path/to/scripts/13-vm-fast-cycle.sh'</span>
+
+<span class="cm"># ② 同步产物</span>
+bash scripts/21-macos-sync-artifacts.sh
+
+<span class="cm"># ③ 跑阶段测试</span>
+bash scripts/22-macos-run-test.sh &lt;阶段&gt; 180
+
+<span class="cm"># ④ 回归</span>
+bash scripts/22-macos-run-test.sh smoke 180
+
+<span class="cm"># ⑤ 交付前门禁</span>
+bash scripts/23-check-worktree-clean.sh</code></pre>
+
+<h2>可用阶段名</h2>
+<pre class="plain"><code>01-io-models          02-i2c-driver         03-ringbuffer-mmap
+04-sysfs-debugfs      05-iio                06-runtime-pm-kunit
+smoke</code></pre>
+
+<h2>交互式运行（推荐给初学者）</h2>
+<pre><code>INTERACTIVE=1 bash scripts/04-run-qemu-vm.sh
+
+<span class="cm"># 进入 QEMU 控制台后可以自己试：</span>
+insmod /lib/modules/virt_i2c.ko
+insmod /lib/modules/sensor_char.ko
+ls -l /dev/sensor0
+cat /dev/sensor0                  <span class="cm"># 持续看到数据流，Ctrl-C 退出</span>
+cat /sys/class/sensor0/sensor0/interval_ms
+cat /sys/kernel/debug/sensor0/stats
+dmesg | tail -20</code></pre>
+
+<h2>结果判定</h2>
+<pre><code><span class="cm"># 日志里的标记格式</span>
+[CHECK:PASS] &lt;检查项名称&gt;
+[CHECK:FAIL] &lt;检查项名称&gt; -- &lt;原因&gt;
+[TEST:START] &lt;阶段名&gt;
+[TEST:END]   &lt;阶段名&gt; pass=N fail=M
+
+<span class="cm"># 任何没有这些标记的输出都不算验证结果</span></code></pre>
+
+<!-- ============================== 附录 B ============================== -->
+<h1 id="ca-2">附录 B　术语表</h1>
+
+<dl class="kv">
+  <dt>字符设备（char device）</dt>
+  <dd>按字节流读写的设备，通过 <code>/dev/xxx</code> 访问，对应内核里的 <code>file_operations</code>。</dd>
+
+  <dt>VFS（Virtual File System）</dt>
+  <dd>文件系统抽象层。用户态 <code>read()</code> 最终由它分发到驱动的回调函数。</dd>
+
+  <dt>设备树（Device Tree, DT / DTS / DTB）</dt>
+  <dd>描述硬件拓扑的数据结构。DTS 是源文件，编译后成 DTB，由 bootloader 传给内核。
+      用来把「硬件是什么样」与「驱动怎么写」分开。</dd>
+
+  <dt><code>compatible</code></dt>
+  <dd>设备树节点的「我是什么」，格式 <code>厂商,型号</code>。驱动用它匹配设备。</dd>
+
+  <dt><code>probe()</code></dt>
+  <dd>驱动与设备匹配成功后内核调用的初始化函数。<strong>一个驱动的入口就在这里。</strong></dd>
+
+  <dt><code>i2c_driver</code> / <code>i2c_client</code> / <code>i2c_adapter</code></dt>
+  <dd>分别是「驱动的从设备匹配表」、「总线上的一个从设备」、「一颗 I2C 控制器」。</dd>
+
+  <dt><code>regmap</code></dt>
+  <dd>寄存器访问抽象层。统一处理寄存器宽度、字节序、读-改-写、加锁等细节，
+      让同一份驱动代码可以用在 I2C / SPI / MMIO 上。</dd>
+
+  <dt>上半部 / 下半部（top half / bottom half）</dt>
+  <dd>中断处理的分层。上半部在硬中断上下文（不能睡眠，要快）；
+      下半部在内核线程里（可以睡眠）。本项目用 <code>request_threaded_irq</code> 实现。</dd>
+
+  <dt>等待队列（wait queue）</dt>
+  <dd>内核里「一批正在等某个条件的进程」的链表。
+      <code>wait_event_*</code> 睡眠、<code>wake_up_*</code> 唤醒。是阻塞 IO 的基础。</dd>
+
+  <dt><code>poll_wait()</code></dt>
+  <dd>在驱动的 <code>.poll</code> 里<strong>登记</strong>等待队列（不睡眠）。
+      真正睡眠由 <code>poll()</code>/<code>epoll_wait()</code> 系统调用负责。</dd>
+
+  <dt>电平触发 / 边沿触发（level / edge triggered）</dt>
+  <dd>电平触发：只要「有数据」这个状态成立，每次查询都报可读（驱动负责实现）。
+      边沿触发：只在状态从「不可读」变「可读」时报一次（由 epoll 在用户态层实现）。</dd>
+
+  <dt>fasync / SIGIO</dt>
+  <dd>异步通知机制。内核通过信号告诉用户态「有数据了」，
+      用户态不需要阻塞也不需要轮询。<code>fasync_helper()</code> 登记，<code>kill_fasync()</code> 发送。</dd>
+
+  <dt><code>kfifo</code></dt>
+  <dd>内核提供的环形缓冲（FIFO）。单生产者单消费者时天然免锁；多读者需要自己加锁。</dd>
+
+  <dt><code>mmap</code> 零拷贝</dt>
+  <dd>把内核分配的物理页直接映射进用户态页表，用户态读取时不再经过 <code>copy_to_user</code>。</dd>
+
+  <dt>seqlock</dt>
+  <dd>一种无锁读的一致性方案：写者用序号（奇=正在写）标示，读者读前后各读一次序号，
+      不一致就重读。<strong>适合「读多写少」且读者不能持锁的场景</strong>（如 mmap 共享页）。</dd>
+
+  <dt>sysfs / debugfs</dt>
+  <dd>sysfs 暴露<strong>稳定的用户接口</strong>（<code>/sys/</code>，改动要谨慎）；
+      debugfs 暴露<strong>调试信息</strong>（<code>/sys/kernel/debug/</code>，无 ABI 保证）。</dd>
+
+  <dt>IIO（Industrial I/O）</dt>
+  <dd>传感器类设备的标准子系统。提供通道描述、缓冲区、触发器等通用机制，
+      让你只写「这颗芯片怎么读写」。</dd>
+
+  <dt>Runtime PM</dt>
+  <dd>运行时电源管理。设备空闲时自动挂起，使用时自动恢复。
+      用<strong>引用计数</strong>表达「现在有人在用，别关」。</dd>
+
+  <dt>KUnit</dt>
+  <dd>内核里的单元测试框架，可以编成外部模块直接 <code>insmod</code> 运行。</dd>
+
+  <dt>KCSAN</dt>
+  <dd>Kernel Concurrency Sanitizer，内核的数据竞争检测器。
+      需要专门编译一个带 KCSAN 的内核（本项目用 <code>scripts/15</code>）。</dd>
+
+  <dt>ftrace</dt>
+  <dd>内核函数跟踪框架。可以记录「哪个函数被调用了、调用了几次」，是内核调试的主力工具。</dd>
+
+  <dt>initramfs</dt>
+  <dd>启动时先加载的一个小型内存文件系统，里面放驱动模块和初始化脚本。
+      本项目把 <code>.ko</code> 和测试脚本都打包进去，这样 QEMU 启动后能立刻加载驱动跑测试。</dd>
+
+  <dt>负控实验（negative control）</dt>
+  <dd>故意注入一个已知缺陷，验证「测试套件必须失败」。
+      如果仍然全绿，说明测试无效。<strong>这是证明测试有效性的唯一方法。</strong></dd>
+
+  <dt>假绿（false green）</dt>
+  <dd>测试全 PASS 但被测对象其实是错的。比测试失败更危险。</dd>
+</dl>
+
+<div class="footnote">
+  <p><strong>本教程配套资源</strong>：项目源码 <code>github.com/lucien-lab/linux-char-driver</code>；
+  更深入的内容见仓库内 <code>docs/impl/</code>（每阶段实现记录）、
+  <code>docs/kb/</code>（每阶段知识点，面向「被追问」）、
+  <code>docs/verify/</code>（每阶段独立验证报告，含证据行号）。</p>
+  <p>教程中的所有命令、数字与结论均来自项目实测日志，可在 <code>logs/</code> 目录下按文件名复核。</p>
+</div>
+
+</div>
+</body>
+</html>

@@ -17,7 +17,7 @@
 
 ## 项目亮点
 
-- **5 个内核模块、2769 行 C / 7194 行代码与脚本**：核心 `driver/sensor_char.c`（1676 行）实现字符设备四种 IO 模型、kfifo 环形缓冲 + `mmap` 零拷贝、sysfs/debugfs 参数与统计、Runtime PM；另有自研虚拟 I2C 控制器 `virt_i2c.c`、标准 IIO 驱动 `sensor_iio.c`、KUnit 单元测试模块。
+- **4 个内核模块、2769 行 C / 7194 行代码与脚本**：核心 `driver/sensor_char.c`（1676 行）实现字符设备四种 IO 模型、kfifo 环形缓冲 + `mmap` 零拷贝、sysfs/debugfs 参数与统计、Runtime PM；另有自研虚拟 I2C 控制器 `virt_i2c.c`、标准 IIO 驱动 `sensor_iio.c`、KUnit 单元测试模块。
 - **七套自动化测试套件、197 项断言全绿**，零内核 WARNING / Oops。实测数据：`01-io-models 16` · `02-i2c-driver 19` · `03-ringbuffer-mmap 40` · `04-sysfs-debugfs 53` · `05-iio 22` · `06-runtime-pm-kunit 32` · `smoke 15`。
 - **每个阶段都有独立验证报告 + 负控（变异）实验**：主动向驱动注入 20+ 处缺陷（删掉 `poll_wait()`、去掉 12 位符号扩展、互换 IIO 通道……），确认测试会 FAIL —— 专门用来拆穿「假绿」。见 `docs/verify/`。
 - **并发正确性有实测证据**：kfifo + 自实现 seqlock，并用 **KCSAN** 内核数据竞争检测器跑通 `concurrency_test`（8 进程并发读写）。
@@ -34,8 +34,8 @@
 | 驱动内调用 I2C 子系统读传感器 | `i2c_get_adapter()` + `i2c_new_client_device()` + `i2c_smbus_read/write_word_data()` | `driver/sensor_char.c` |
 | 中断处理 | 自建虚拟中断控制器（`irq_chip`+`irq_domain`）+ `request_threaded_irq`，上半部/线程化下半部分离 | `driver/sensor_char.c` |
 | 打通内核态→用户态数据通路 | 线程化中断读传感器 → 内核缓存 + waitqueue → `read()`/`ioctl()` 唤醒返回 | `driver/sensor_char.c` `user/sensor_test.c` |
-| 设备树解耦匹配 | `of_match_table` 匹配 `compatible`，总线号/地址/周期全部来自 dts | `dts/` `driver/sensor_char.c` |
-| 交叉编译工具链 + ARM 平台编译模块 | macOS 上 `aarch64-linux-musl-gcc` 交叉编译用户态程序；Linux VM 内编译内核与 .ko | `scripts/01/03` |
+| 设备树解耦匹配 | `of_match_table` 匹配 `compatible`，总线号/地址/周期全部来自 dts | `dts/sensor-node.dts.inc` `driver/sensor_char.c` |
+| 交叉编译工具链 + ARM 平台编译模块 | macOS 上 `aarch64-linux-musl-gcc` 交叉编译用户态程序；Linux VM 内编译内核与 .ko | `scripts/01-setup-macos.sh` `scripts/03-build-all-vm.sh` |
 | insmod / rmmod 验证 | 自动演示脚本含加载、probe 日志、节点检查、卸载全流程 | `scripts/init-demo.sh` |
 | dmesg / ftrace / GDB 定位问题 | ftrace 抓到线程化中断执行轨迹；GDB 断点命中 `i2c_get_adapter`；真实 WARNING 案例的定位与修复 | `docs/03-调试方法手册.md` |
 
@@ -129,6 +129,7 @@ linux-char-driver/
     ├── 02-驱动设计笔记.md           字符设备 / I2C / 中断 / 设备树 四大模块讲解
     ├── 03-调试方法手册.md           dmesg / ftrace / GDB 实操 + 真实 WARNING 案例
     ├── 04-真机移植指南.md           换到树莓派 + SHT30 的改动清单
+    ├── 初学者教程.html             零基础入门教程（可用浏览器打印成 PDF）
     ├── 10-开发与验证守则.md         工程纪律：什么算「验证通过」
     ├── 11-阶段任务书.md             6 个阶段的接口契约与验收标准
     ├── impl/                       各阶段实现记录
@@ -144,13 +145,13 @@ linux-char-driver/
 
 | 时段 | 做什么 | 验证标准 |
 |------|--------|----------|
-| 0–1h | 跑 `scripts/01` + `02`，建好虚拟机；`03` 编出内核 | `artifacts/Image` 生成 |
+| 0–1h | 跑 `scripts/01-setup-macos.sh` + `scripts/02-setup-vm.sh`，建好虚拟机；`scripts/03-build-all-vm.sh` 编出内核 | `artifacts/Image` 生成 |
 | 1–2h | 跑 `04` 自动演示，看清 insmod → probe → /dev/sensor0 全链路 | 看到温度数据流 |
 | 2–3h | 读 `driver/sensor_char.c` 的字符设备部分，改一个 ioctl 命令试试 | 重编后新命令生效 |
 | 3–4h | 读 I2C 部分 + `i2c-tools`（`i2cdetect -y 0`、`i2cget`）手动收发 | 用户态直接读到 0x48 |
 | 4–5h | 改 `dts/sensor-node.dts.inc`（如把周期改 1000ms、地址改 0x44），重编 dtb | dmesg 显示新参数 |
-| 5–6h | 按 `docs/03` 用 ftrace 观察中断下半部；`echo function_graph` 看调用链 | trace 里看到自己的函数 |
-| 6–7h | 按 `docs/05` 用 GDB 断点、单步、查看 `sd->latest` | 断点命中，能打印结构体 |
+| 5–6h | 按 `docs/03-调试方法手册.md` 用 ftrace 观察中断下半部；`echo function_graph` 看调用链 | trace 里看到自己的函数 |
+| 6–7h | 按 `docs/03-调试方法手册.md` 用 GDB 断点、单步、查看 `sd->latest` | 断点命中，能打印结构体 |
 | 7–8h | 故意制造故障（错地址 / 错 compatible / 少 of_match_table）并自己定位 | 能说出错误现象→原因→修法 |
 
 ---
